@@ -23,7 +23,7 @@ All future tools are mathematically compared to the reference tool. This means y
 
 ---
 
-### **MACRO 2 — Tool Change**
+### MACRO 2 — Tool Change
 
 **Purpose:** Allows mid-job tool changes without ever touching the workpiece.
 
@@ -40,7 +40,7 @@ This guarantees the new tool tip sits at the *exact same Z-zero* as the referenc
 
 ---
 
-### **MACRO 3 — Park at Tool Sensor**
+### MACRO 3 — Park at Tool Sensor
 
 **Purpose:** Provides a quick, safe movement to the tool sensor without modifying any offsets.
 
@@ -55,7 +55,7 @@ Use this macro for cleaning, inspection, or prep before a tool change. Safe, sim
 
 ---
 
-### **MACRO 4 — Safe Return to Work Zero**
+### MACRO 4 — Safe Return to Work Zero
 
 **Purpose:** Returns the spindle to X0 Y0 safely.
 
@@ -183,6 +183,8 @@ Run this whenever you want a **safe, predictable return to origin**.
 ; MACRO: Touch Plate and Tool Height Reference
 ; VERSION: 1.01
 ; DESCRIPTION: Probes XYZ on Touch plate, then measures tool height on fixed sensor.
+; Tool Height Reference based on neilferreri's work authored on Jul 14, 2019
+; https://github.com/cncjs/CNCjs-Macros/tree/master/Initial%20%26%20New%20Tool
 ; ==============================================================================
 
 ; ==============================================================================
@@ -339,6 +341,8 @@ G0 X0 Y0                            ; Rapid move to X0 Y0 work zero
 ; VERSION: 1.01
 ; DESCRIPTION: Moves to sensor, allows tool swap, measures new length, updates Offset.
 ; WARNING: Run "Touch Plate and Tool Height" macro BEFORE this one.
+; Tool Height Reference based on neilferreri's work authored on Jul 14, 2019
+; https://github.com/cncjs/CNCjs-Macros/tree/master/Initial%20%26%20New%20Tool
 ; ==============================================================================
 
 %wait
@@ -454,5 +458,4 @@ G53 G0 Z-10
 
 ; Go to work zero
 G0 X0 Y0
-
 ```
