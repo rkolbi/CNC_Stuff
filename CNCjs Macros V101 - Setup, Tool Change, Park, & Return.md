@@ -191,7 +191,7 @@ Run this whenever you want a **safe, predictable return to origin**.
 ; USER CONFIGURATION
 ; ==============================================================================
 ;XYZ Probe Plate settings
-%global.state.PLATE_THICKNESS = 12.25
+%global.state.PLATE_THICKNESS = 12.05 ; Increasing drives bit closer to work piece
 %global.state.Z_FAST_PROBE_DISTANCE = 50
 %global.state.X_PLATE_OFFSET = -13.175
 %global.state.Y_PLATE_OFFSET = -13.175
@@ -200,7 +200,7 @@ Run this whenever you want a **safe, predictable return to origin**.
 %global.state.SAFE_HEIGHT = -5
 %global.state.PROBE_X_LOCATION = -1.5
 %global.state.PROBE_Y_LOCATION = -1224
-%global.state.PROBE_Z_LOCATION = -10
+%global.state.PROBE_Z_LOCATION = -5
 %global.state.PROBE_DISTANCE = 100
 %global.state.PROBE_RAPID_FEEDRATE = 200
 
@@ -225,10 +225,12 @@ G38.2 Z-[global.state.Z_FAST_PROBE_DISTANCE] F150 ; Probe Z down towards plate
 G90                                 ; Absolute positioning
 G92 Z[global.state.PLATE_THICKNESS] ; Set Z coordinate to plate thickness
 G1 Z14                              ; Linear move up to Z14
-
 ; Slow probe
 G91                                 ; Relative positioning
-G38.2 Z-15 F60                      ; Probe Z down slowly for accuracy
+G38.2 Z-15 F40                      ; Probe Z down slowly for accuracy
+G0 Z2                               ; Rapid retract Z by 2mm
+G4 P.25                             ; Dwell
+G38.2 Z-3 F20                       ; second accuracy pass
 G90                                 ; Absolute positioning
 G92 Z[global.state.PLATE_THICKNESS] ; Reset Z coordinate to plate thickness
 G0 Z16                              ; Rapid move up to safe Z
@@ -238,7 +240,7 @@ G0 Z16                              ; Rapid move up to safe Z
 ; ==============================================================================
 G0 X-70 F800                        ; Rapid move to X approach position
 G0 Z4                               ; Rapid move down to probing height
-G38.2 X0 F200                       ; Probe X towards plate
+G38.2 X0 F170                       ; Probe X towards plate
 G92 X[global.state.X_PLATE_OFFSET]  ; Set X coordinate (compensating for plate width)
 G1 X-14                             ; Linear move back from plate
 
@@ -252,7 +254,7 @@ G0 X-15                             ; Rapid move back to clear plate
 G0 Z16                              ; Rapid move up to safe Z
 G0 X30 Y-70 F800                    ; Rapid move to Y approach position
 G0 Z4                               ; Rapid move down to probing height
-G38.2 Y0 F200                       ; Probe Y towards plate
+G38.2 Y0 F170                       ; Probe Y towards plate
 G92 Y[global.state.Y_PLATE_OFFSET]  ; Set Y coordinate (compensating for plate width)
 G1 Y-14                             ; Linear move back from plate
 
@@ -301,16 +303,14 @@ G53 Z[global.state.PROBE_Z_LOCATION]; Move Z down to approach height in Machine 
 G91                                 ; Relative positioning
 G38.2 Z-[global.state.PROBE_DISTANCE] F[global.state.PROBE_RAPID_FEEDRATE] ; Fast probe Z towards sensor
 G0 Z2                               ; Rapid retract Z by 2mm
-
+G4 P.25                             ; Dwell
 G38.2 Z-5 F40                       ; Slow probe Z for accuracy
 G4 P.25                             ; Dwell (pause) for 0.25 seconds
 G38.4 Z10 F20                       ; Probe Z away (verify switch release)
 G4 P.25                             ; Dwell
-G38.2 Z-2 F10                       ; Very slow probe Z for final accuracy
+G38.2 Z-2 F5                        ; Very slow probe Z for final accuracy
 G4 P.25                             ; Dwell
 G38.4 Z10 F5                        ; Very slow probe Z away
-G4 P.25                             ; Dwell
-
 G90                                 ; Absolute positioning
 %global.state.TOOL_REFERENCE = posz ; Store current Z machine position
 %wait
@@ -352,7 +352,7 @@ G0 X0 Y0                            ; Rapid move to X0 Y0 work zero
 %global.state.SAFE_HEIGHT = -5
 %global.state.PROBE_X_LOCATION = -1.5
 %global.state.PROBE_Y_LOCATION = -1224
-%global.state.PROBE_Z_LOCATION = -10
+%global.state.PROBE_Z_LOCATION = -5
 %global.state.PROBE_DISTANCE = 100
 %global.state.PROBE_RAPID_FEEDRATE = 200
 
@@ -395,16 +395,14 @@ G53 Z[global.state.PROBE_Z_LOCATION]; Move Z down to approach height in Machine 
 G91                                 ; Relative positioning
 G38.2 Z-[global.state.PROBE_DISTANCE] F[global.state.PROBE_RAPID_FEEDRATE] ; Fast probe Z towards sensor
 G0 Z2                               ; Rapid retract Z by 2mm
-
-; Refine Probe
+G4 P.25                             ; Dwell
 G38.2 Z-5 F40                       ; Slow probe Z for accuracy
 G4 P.25                             ; Dwell (pause) for 0.25 seconds
 G38.4 Z10 F20                       ; Probe Z away (verify switch release)
 G4 P.25                             ; Dwell
-G38.2 Z-2 F10                       ; Very slow probe Z for final accuracy
+G38.2 Z-2 F5                        ; Very slow probe Z for final accuracy
 G4 P.25                             ; Dwell
 G38.4 Z10 F5                        ; Very slow probe Z away
-G4 P.25                             ; Dwell
 G90                                 ; Absolute positioning
 %wait
 
@@ -469,4 +467,3 @@ G53 G0 Z-5
 ; Go to work zero
 G0 X0 Y0
 ```
-
