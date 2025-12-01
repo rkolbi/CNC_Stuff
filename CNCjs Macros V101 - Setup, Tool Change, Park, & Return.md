@@ -1,6 +1,6 @@
 # CNCjs Advanced Workflow: Workpiece Setup, Tool Change & Park Macro
 
----
+------
 
 ## 📘 Macro System Overview (What Each Macro Does & How They Work)
 
@@ -10,165 +10,142 @@ This machine workflow uses **four coordinated macros**, each with a specific pur
 
 **Purpose:** Establishes the foundation for the entire job.
 
-- Probes Z, then X and Y, using the touch plate.  
-- Sets accurate workpiece zero at the stock’s corner.  
-- Moves to the tool-height sensor.  
-- Measures the **reference tool**.  
+- Probes Z, then X and Y using the touch plate.
+- Sets accurate workpiece zero at the stock’s corner.
+- Moves to the tool-height sensor.
+- Measures the **reference tool**.
 - Saves the reference tool’s machine-coordinate Z as `TOOL_REFERENCE`.
-
-**Why it matters:**  
-All future tools are mathematically compared to the reference tool. This means you never have to re-probe the workpiece again during tool changes.
 
 **Run:** Once at the start of each job.
 
----
+------
 
-### MACRO 2 — Tool Change
+### **MACRO 2 — Tool Change**
 
-**Purpose:** Allows mid-job tool changes without ever touching the workpiece.
+**Purpose:** Allows mid-job tool changes without re-probing the workpiece.
 
-- Parks the spindle at the tool-height sensor.  
-- Prompts operator to swap tools.  
-- Probes the new tool.  
-- Computes tool-length difference.  
+- Parks the spindle at the tool-height sensor.
+- Prompts operator to swap tools.
+- Probes the new tool.
+- Computes tool-length difference.
 - Applies corrected Z-offset using `G10 L20`.
-
-**Why it matters:**  
-This guarantees the new tool tip sits at the *exact same Z-zero* as the reference tool, even if tools differ in length.
 
 **Run:** Every time a new tool is inserted.
 
----
+------
 
-### MACRO 3 — Park at Tool Sensor
+### **MACRO 3 — Park at Tool Sensor**
 
-**Purpose:** Provides a quick, safe movement to the tool sensor without modifying any offsets.
+**Purpose:** Moves safely to the tool sensor without changing offsets.
 
-- Stops spindle.  
-- Raises to a safe machine Z.  
-- Moves directly to the tool sensor.  
+Use for cleaning, inspection, and manual preparation before tool changes.
 
-**Why it matters:**  
-Use this macro for cleaning, inspection, or prep before a tool change. Safe, simple, risk-free.
+------
 
-**Run:** Anytime the operator needs to move the tool safely away.
+### **MACRO 4 — Safe Return to Work Zero**
 
----
+**Purpose:** Safely returns the spindle to X0 Y0 without modifying offsets.
 
-### MACRO 4 — Safe Return to Work Zero
-
-**Purpose:** Returns the spindle to X0 Y0 safely.
-
-- Raises to safe machine Z.  
-- Travels to work zero in the active work coordinate system.  
-- Does not modify offsets or Z-zero.
-
-**Why it matters:**  
-Convenient for inspecting the work area or preparing for the next job step.
-
-**Run:** Anytime you want to return to work zero without disturbing offsets.
-
----
+------
 
 ## 🚦 Operator Workflow Overview
 
 This section explains **how the operator should use all four macros** during a typical job.
 
----
+------
 
 ### 🔧 1. Before Starting Any Job
 
-1. Clamp material securely.  
-2. Install the **reference tool** (first tool of the job).  
-3. Ensure the touch plate and clip are ready and accessible.  
-4. Confirm the fixed tool-height sensor is unobstructed.  
-5. Clear the machine bed and verify that the configured **SAFE_HEIGHT** is truly safe for your setup.
+1. Clamp material securely.
+2. Install the **reference tool**.
+3. Ensure the touch plate and clip are ready.
+4. Verify the fixed tool-height sensor is unobstructed.
+5. Confirm the configured **SAFE_HEIGHT** is truly safe for your setup.
 
----
+------
 
 ### ▶️ 2. Run MACRO 1 — Touch Plate & Reference Tool
 
-**What this does:**
+- Probes the stock with the touch plate to set Z, X, and Y.
+- Moves to the tool-height sensor and measures the reference tool.
+- Stores the reference tool’s machine Z as `TOOL_REFERENCE`.
 
-- Probes the stock with the touch plate to set Z, then X and Y.  
-- Sets accurate workpiece zero at the corner.  
-- Moves to the tool-height sensor.  
-- Measures the reference tool and saves `TOOL_REFERENCE`.
+Do **not** change tools during this macro.
 
-**Operator actions:**
-
-- When prompted, **attach the clip and place the touch plate** under the tool.  
-- When prompted again, **remove the touch plate and clip**.  
-- Do **not** change tools during this macro.  
-
-Once Macro 1 completes, your work zero and reference tool height are fully established.
-
----
+------
 
 ### ▶️ 3. Begin Cutting
 
-- Load and run your G-code with the reference tool.  
-- Cut normally until the job (or your program) calls for a tool change.
+Use the reference tool normally and run your G-code until a tool change is required.
 
----
+------
 
 ### ▶️ 4. When a Tool Change is Needed, Run MACRO 2 — Tool Change
 
-**What this does:**
+- Moves to the sensor, stops spindle.
+- Prompts you to change the tool.
+- Measures the new tool length.
+- Applies the correct Z-offset.
 
-- Stops the spindle.  
-- Raises to safe Z.  
-- Moves to the tool-height sensor.  
-- Prompts you to change the tool.  
-- Measures the new tool.  
-- Applies a corrected Z-offset so the new tool uses the same Z-zero as the reference tool.
-
-**Operator actions:**
-
-1. Wait for the machine to park at the sensor and stop the spindle.  
-2. Change the tool and **tighten the collet securely**.  
-3. Press *Continue* when ready.  
-4. Allow all probing moves to complete.  
-
-After this, resume your program. Z-depth for the new tool will be correct.
-
----
+------
 
 ### ▶️ 5. Using MACRO 3 — Park at Tool Sensor
 
-Use **MACRO 3** when you want to:
+Use **anytime** to safely move away from the workpiece without altering offsets.
 
-- Move the spindle safely away from the workpiece.  
-- Inspect or clean the tool.  
-- Prepare for a manual tool change (before running Macro 2).  
-
-**Important:**
-
-- This macro does *not* change any offsets.  
-- It simply stops the spindle and moves to a safe, known location at the tool sensor.
-
-You can safely run it **any time** the machine is idle or paused.
-
----
+------
 
 ### ▶️ 6. Using MACRO 4 — Safe Return to Work Zero
 
-Use **MACRO 4** when you want to:
+Moves the spindle safely to X0 Y0 in work coordinates without changing Z-zero.
 
-- Return the spindle to **X0 Y0** in work coordinates.  
-- Make sure the move back to zero is done from a safe machine Z.  
-- Inspect the part at the origin after cuts.  
+------
 
-**What it does:**
+### ▶️ 7. **Using MACRO 1r — Reference Tool Recovery (ONLY When Needed)**
 
-- Stops the spindle.  
-- Raises to a safe machine Z height.  
-- Moves to the workpiece origin X0 Y0.  
-- Does *not* change work offsets or Z-zero.
+**Purpose:**
+ MACRO 1r is a *special-use recovery macro* used **only when TOOL_REFERENCE has been lost** and must be rebuilt **without re-probing the workpiece**.
 
-Run this whenever you want a **safe, predictable return to origin**.
+This macro re-measures the **current tool** on the fixed tool sensor and regenerates a valid `TOOL_REFERENCE`.
 
----
+------
+
+#### ⚠️ **CRITICAL WARNINGS**
+
+- **Never use MACRO 1r during normal machining workflow.**
+- Only use *when TOOL_REFERENCE no longer exists or was reset*.
+- The **current tool must be the same reference tool** used when running MACRO 1 originally.
+- Using MACRO 1r with any other tool will generate an incorrect tool height and cause Z-depth errors.
+
+------
+
+#### ✔️ When to Use MACRO 1r
+
+Use this macro **only** when:
+
+- You lost TOOL_REFERENCE (power cycle, CNCjs restart, memory loss, etc.).
+- The tool currently in the spindle **is the reference tool**.
+- You want to continue a multi-tool workflow without re-probing the workpiece.
+
+------
+
+#### ❌ When *NOT* to Use MACRO 1r
+
+Do **NOT** use this macro:
+
+- During a normal job workflow
+- If TOOL_REFERENCE already exists
+- After tool changes
+- If the current tool is *not* the reference tool
+- To probe the touch plate (it does not do that)
+
+------
+
+#### ✔️ After Running MACRO 1r
+
+- TOOL_REFERENCE is restored
+- You may resume using MACRO 2 for tool changes
+- Your workpiece zero is untouched and still correct
 
 
 
@@ -443,7 +420,10 @@ M5 (Ensuring spindle is stopped.)
 G21
 G90
 
+; Raise to safe machine Z
 G53 G0 Z-5
+
+; Go to tool height sensor
 G53 G0 X-1.5 Y-1224
 ```
 
@@ -467,3 +447,116 @@ G53 G0 Z-5
 ; Go to work zero
 G0 X0 Y0
 ```
+
+------
+
+# 🔧 **MACRO 1R — Reference Tool Recovery**
+
+```gcode
+; ==============================================================================
+; MACRO 1r: Reference Tool Recovery (Sensor Only)
+; VERSION: 1.02 (GRBL-safe)
+; DESCRIPTION:
+;   Re-establish TOOL_REFERENCE using the current tool at the fixed sensor.
+;   Only runs if TOOL_REFERENCE does NOT already exist.
+;   Prevents accidental overwriting of a valid tool reference.
+;   For GRBL 1.1 — NO modal probe checks included.
+; ==============================================================================
+
+; ==============================================================================
+; SAFETY CHECK - Abort if TOOL_REFERENCE already exists
+; ==============================================================================
+%if global.state.TOOL_REFERENCE != null
+    (ERROR: TOOL_REFERENCE already exists!)
+    (Current TOOL_REFERENCE = [global.state.TOOL_REFERENCE])
+    (To overwrite it, CLEAR it manually first:)
+    (Use: %global.state.TOOL_REFERENCE = null)
+    M0 (TOOL REFERENCE ALREADY EXISTS - Abort Macro.)
+    %return
+%endif
+
+; ==============================================================================
+; USER CONFIGURATION (matches Macro 1 settings)
+; ==============================================================================
+%global.state.SAFE_HEIGHT = -5
+%global.state.PROBE_X_LOCATION = -1.5
+%global.state.PROBE_Y_LOCATION = -1224
+%global.state.PROBE_Z_LOCATION = -10
+%global.state.PROBE_DISTANCE = 100
+%global.state.PROBE_RAPID_FEEDRATE = 200
+
+%wait
+
+M0 (This will SET TOOL_REFERENCE using the CURRENT tool.)
+
+; ==============================================================================
+; Save Modal State & Position
+; ==============================================================================
+%X0 = posx
+%Y0 = posy
+%Z0 = posz
+
+%WCS = modal.wcs
+%PLANE = modal.plane
+%UNITS = modal.units
+%DISTANCE = modal.distance
+%FEEDRATE = modal.feedrate
+%SPINDLE = modal.spindle
+%COOLANT = modal.coolant
+
+; ==============================================================================
+; Move to Fixed Tool Sensor (Machine Coordinates)
+; ==============================================================================
+G21                     ; Metric
+M5                      ; Spindle stop
+G90                     ; Absolute positioning
+
+G53 G0 Z[global.state.SAFE_HEIGHT]  ; Raise to safe machine Z
+G53 G0 X[global.state.PROBE_X_LOCATION] Y[global.state.PROBE_Y_LOCATION]
+%wait
+
+G53 G0 Z[global.state.PROBE_Z_LOCATION]
+%wait
+
+
+; ==============================================================================
+; Probe Tool on Fixed Sensor (GRBL-valid sequence)
+; ==============================================================================
+G91                                   ; Relative
+
+G38.2 Z-[global.state.PROBE_DISTANCE] F[global.state.PROBE_RAPID_FEEDRATE] ; Fast probe
+G0 Z2                                 ; Retract 2mm
+
+G38.2 Z-5 F40                         ; First slow accuracy pass
+G4 P0.25
+G38.4 Z10 F20                         ; Verify switch opens
+G4 P0.25
+G38.2 Z-2 F10                         ; Very slow precision pass
+G4 P0.25
+G38.4 Z10 F5                          ; Final open check
+G4 P0.25
+
+G90                                   ; Back to absolute
+
+; ==============================================================================
+; Store TOOL_REFERENCE
+; ==============================================================================
+%global.state.TOOL_REFERENCE = posz
+(NEW TOOL_REFERENCE = [global.state.TOOL_REFERENCE])
+%wait
+
+; ==============================================================================
+; Cleanup & Stay at Sensor
+; ==============================================================================
+G91
+G0 Z5
+G90
+
+G53 G0 Z[global.state.SAFE_HEIGHT]
+%wait
+
+M0 (Reference Tool Recovery Complete — Machine parked at sensor.)
+
+; Restore Modal State
+[WCS] [PLANE] [UNITS] [DISTANCE] [FEEDRATE] [SPINDLE] [COOLANT]
+````
