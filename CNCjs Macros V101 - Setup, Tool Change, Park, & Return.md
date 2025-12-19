@@ -1,151 +1,203 @@
-# CNCjs Advanced Workflow: Workpiece Setup, Tool Change & Park Macro
+# CNCjs Advanced Workflow: Workpiece Setup, Tool Change & Park Macros
 
 ------
 
-## 📘 Macro System Overview (What Each Macro Does & How They Work)
+## 📘 Macro System Overview
 
-This machine workflow uses **four coordinated macros**, each with a specific purpose. Together they create a safe, repeatable, and highly accurate tool-length and work-zero management system.
+This workflow uses **six coordinated CNCjs macros**, each with a specific purpose. Together, they provide a safe, repeatable method for establishing work zero, maintaining accurate Z across tool changes, and recovering `TOOL_REFERENCE` when needed.
 
-### **MACRO 1 — Touch Plate & Reference Tool**
+### Coordinate model (important)
 
-**Purpose:** Establishes the foundation for the entire job.
+- **Assumes the machine is homed** and machine coordinates are valid before any `G53` move.
+- **Work zero (job setup):** These macros establish work coordinates using `G92` *(a temporary coordinate shift applied in the currently active WCS, e.g., G54)*.
+  - **Important:** `G92` is temporary (it is not stored like `G54` values).
+  - **Note:** If CNCjs/GRBL resets or restarts (or you power-cycle), you will lose the `G92` shift (and likely `TOOL_REFERENCE`). Re-run the appropriate setup macro (or use **MACRO 1R** if the reference tool is installed).
+- **Fixed sensor travel:** `G53` moves are used **only** to travel to the fixed tool sensor in **machine coordinates**.
+- **Tool-change Z preservation:** During tool changes, the macros preserve Z consistency by applying the stored `TOOL_REFERENCE` using `G10 L20` (without re-probing the workpiece).
+- **SAFE_HEIGHT meaning:** **SAFE_HEIGHT is a machine-Z height** used with `G53` and must clear clamps/fixtures everywhere on the table.
 
-- Probes Z, then X and Y using the touch plate.
-- Sets accurate workpiece zero at the stock’s corner.
-- Moves to the tool-height sensor.
-- Measures the **reference tool**.
-- Saves the reference tool’s machine-coordinate Z as `TOOL_REFERENCE`.
+### Reference tool (definition)
 
-**Run:** Once at the start of each job.
+The **reference tool** is the tool you treat as the baseline for the job (often Tool #1). It is measured once at the fixed sensor to establish `TOOL_REFERENCE`.
+
+### Operator rules (do not skip)
+
+✅ **Do not run MACRO 2 unless `TOOL_REFERENCE` already exists** (created by **MACRO 1** or **MACRO 1Z**, or recovered by **MACRO 1R**).
+✅ **Do not run both MACRO 1 and MACRO 1Z for the same job.** Choose the one that matches your setup.
 
 ------
 
-### **MACRO 2 — Tool Change**
+### **MACRO 1 — XYZ Touch Plate & Reference Tool (Standard Setup)**
 
-**Purpose:** Allows mid-job tool changes without re-probing the workpiece.
+**Purpose:** Establishes job zero and creates the reference-tool baseline.
 
-- Parks the spindle at the tool-height sensor.
-- Prompts operator to swap tools.
-- Probes the new tool.
-- Computes tool-length difference.
-- Applies corrected Z-offset using `G10 L20`.
+- Probes **Z, then X and Y** using the touch plate.
+- Sets **workpiece X0/Y0/Z0** at the chosen corner/edge.
+- Moves to the fixed tool-height sensor.
+- Measures the installed **reference tool**.
+- Stores the sensor contact point as machine Z: `TOOL_REFERENCE`.
 
-**Run:** Every time a new tool is inserted.
+**Run:** Once at the start of each job (when X/Y probing is possible).
+
+------
+
+### **MACRO 1Z — Z-Only Touch Plate & Reference Tool (Manual XY Setup)**
+
+**Purpose:** Establishes Z zero and the same reference-tool baseline when X/Y probing isn’t practical.
+
+- Operator manually sets **X=0 / Y=0** in the **currently active WCS**.
+- Probes **ONLY Z** using the touch plate.
+- Moves to the fixed tool-height sensor.
+- Measures the installed **reference tool**.
+- Stores the sensor contact point as machine Z: `TOOL_REFERENCE`.
+
+**Run:** Once at the start of each job **only** when X/Y probing is not possible (round/irregular stock, inaccessible edges).
+
+**Behavior note:**
+MACRO 1Z returns to the **location where the macro was started** (typically your **flat Z-probing spot**), which may be different from the project’s XY origin **where you set X0/Y0**.
+
+------
+
+### **When to Use MACRO 1 vs MACRO 1Z**
+
+- Use **MACRO 1** when the material has reliable, **probeable** X/Y edges (square/rectangular stock, known corner).
+- Use **MACRO 1Z** when X/Y probing isn’t possible (round stock, irregular/live-edge material, or obstructed edges) and you will set X/Y manually.
+
+------
+
+### **MACRO 2 — Tool Change (Preserve Work Z Using TOOL_REFERENCE)**
+
+**Purpose:** Enables tool swaps **without re-probing the workpiece**, while keeping the original work Z-zero correct.
+
+- Moves to the fixed tool-height sensor and stops the spindle.
+- Prompts the operator to change the tool.
+- Probes the **new tool** on the fixed sensor.
+- Preserves the correct Z relationship by setting the active WCS Z to the stored `TOOL_REFERENCE` using `G10 L20`.
+
+**Run:** Every time a new tool is inserted during the job.
+**Prerequisite:** `TOOL_REFERENCE` must already exist from **MACRO 1** or **MACRO 1Z** (or be restored using **MACRO 1R**).
 
 ------
 
 ### **MACRO 3 — Park at Tool Sensor**
 
-**Purpose:** Moves safely to the tool sensor without changing offsets.
+**Purpose:** Safely moves to the tool sensor without changing offsets.
 
-Use for cleaning, inspection, and manual preparation before tool changes.
+Use this for cleaning, inspection, or staging before a manual tool swap.
 
 ------
 
 ### **MACRO 4 — Safe Return to Work Zero**
 
-**Purpose:** Safely returns the spindle to X0 Y0 without modifying offsets.
+**Purpose:** Raises to **SAFE_HEIGHT** in machine coordinates, then returns to **X0 Y0** in work coordinates **without changing offsets**.
 
 ------
+
+### **MACRO 1R — Reference Tool Recovery (Sensor Only, Recovery Use)**
+
+**Purpose:** Restores `TOOL_REFERENCE` **without re-probing the workpiece**.
+
+- Runs only if `TOOL_REFERENCE` does not already exist.
+- Measures the **current tool** on the fixed sensor and stores it as `TOOL_REFERENCE`.
+
+⚠️ Use only when the tool currently installed is the original **reference tool** from **MACRO 1 / MACRO 1Z**.
+
+------
+
+
 
 ## 🚦 Operator Workflow Overview
 
-This section explains **how the operator should use all four macros** during a typical job.
+This section describes how to use the macros during a typical job.
 
 ------
 
-### 🔧 1. Before Starting Any Job
+### 🔧 1) Before Starting Any Job
 
 1. Clamp material securely.
-2. Install the **reference tool**.
+2. Install the **reference tool** (your baseline tool for the job).
 3. Ensure the touch plate and clip are ready.
-4. Verify the fixed tool-height sensor is unobstructed.
-5. Confirm the configured **SAFE_HEIGHT** is truly safe for your setup.
+4. Verify the fixed tool-height sensor is clean and unobstructed.
+5. Confirm **SAFE_HEIGHT** is truly safe for your machine, clamps, and fixtures.
+6. Confirm the machine is **homed** so `G53` moves are safe and accurate.
 
 ------
 
-### ▶️ 2. Run MACRO 1 — Touch Plate & Reference Tool
+### ▶️ 2) Choose Your Setup Macro (MACRO 1 *or* MACRO 1Z)
 
-- Probes the stock with the touch plate to set Z, X, and Y.
-- Moves to the tool-height sensor and measures the reference tool.
-- Stores the reference tool’s machine Z as `TOOL_REFERENCE`.
+#### ✅ If your material has probeable X/Y edges (square/rectangular stock, known corner)
 
-Do **not** change tools during this macro.
+Run **MACRO 1 — XYZ Touch Plate & Reference Tool**:
 
-------
+- Probes Z, X, and Y with the touch plate
+- Sets X0/Y0/Z0 automatically
+- Measures the reference tool on the fixed sensor and stores `TOOL_REFERENCE`
 
-### ▶️ 3. Begin Cutting
+#### ✅ If your material cannot be probed in X/Y (round stock, irregular/live-edge, inaccessible edges)
 
-Use the reference tool normally and run your G-code until a tool change is required.
+Run **MACRO 1Z — Z-Only Touch Plate & Reference Tool**:
 
-------
+Operator steps first:
 
-### ▶️ 4. When a Tool Change is Needed, Run MACRO 2 — Tool Change
+- Jog to your project’s intended XY zero and **set X=0 / Y=0 manually** in the **currently active WCS**.
+- Jog to a safe flat area for Z probing.
 
-- Moves to the sensor, stops spindle.
-- Prompts you to change the tool.
-- Measures the new tool length.
-- Applies the correct Z-offset.
+Then run **MACRO 1Z**:
 
-------
+- Probes **ONLY Z** with the touch plate
+- Measures the reference tool on the fixed sensor and stores `TOOL_REFERENCE`
 
-### ▶️ 5. Using MACRO 3 — Park at Tool Sensor
-
-Use **anytime** to safely move away from the workpiece without altering offsets.
+⚠️ **Do not run both MACRO 1 and MACRO 1Z for the same job.**
 
 ------
 
-### ▶️ 6. Using MACRO 4 — Safe Return to Work Zero
+### ▶️ 3) Begin Cutting
 
-Moves the spindle safely to X0 Y0 in work coordinates without changing Z-zero.
-
-------
-
-### ▶️ 7. **Using MACRO 1r — Reference Tool Recovery (ONLY When Needed)**
-
-**Purpose:**
- MACRO 1r is a *special-use recovery macro* used **only when TOOL_REFERENCE has been lost** and must be rebuilt **without re-probing the workpiece**.
-
-This macro re-measures the **current tool** on the fixed tool sensor and regenerates a valid `TOOL_REFERENCE`.
+- Start your job normally using the reference tool.
+- Run your G-code until a tool change is required.
 
 ------
 
-#### ⚠️ **CRITICAL WARNINGS**
+### ▶️ 4) Tool Changes During the Job
 
-- **Never use MACRO 1r during normal machining workflow.**
-- Only use *when TOOL_REFERENCE no longer exists or was reset*.
-- The **current tool must be the same reference tool** used when running MACRO 1 originally.
-- Using MACRO 1r with any other tool will generate an incorrect tool height and cause Z-depth errors.
+When the job calls for a new tool, run **MACRO 2 — Tool Change**:
 
-------
+- The macro moves to the fixed sensor and stops the spindle
+- You swap the tool
+- The macro probes the new tool on the sensor
+- The macro preserves the original work Z-zero using `G10 L20` and `TOOL_REFERENCE`
 
-#### ✔️ When to Use MACRO 1r
-
-Use this macro **only** when:
-
-- You lost TOOL_REFERENCE (power cycle, CNCjs restart, memory loss, etc.).
-- The tool currently in the spindle **is the reference tool**.
-- You want to continue a multi-tool workflow without re-probing the workpiece.
+Repeat **MACRO 2** for every tool change.
 
 ------
 
-#### ❌ When *NOT* to Use MACRO 1r
+### ▶️ 5) Optional: Parking and Returning
 
-Do **NOT** use this macro:
+Use these any time during setup or between operations:
 
-- During a normal job workflow
-- If TOOL_REFERENCE already exists
-- After tool changes
-- If the current tool is *not* the reference tool
-- To probe the touch plate (it does not do that)
+- **MACRO 3 — Park at Tool Sensor**
+  Moves to the sensor area for inspection/cleaning/staging without changing offsets.
+- **MACRO 4 — Safe Return to Work Zero**
+  Raises to **SAFE_HEIGHT**, then returns to **X0 Y0** in work coordinates without modifying offsets.
 
 ------
 
-#### ✔️ After Running MACRO 1r
+### ▶️ 6) Recovery Only (If TOOL_REFERENCE Is Lost)
 
-- TOOL_REFERENCE is restored
-- You may resume using MACRO 2 for tool changes
-- Your workpiece zero is untouched and still correct
+If CNCjs restarts, power cycles, or `TOOL_REFERENCE` is missing:
+
+Run **MACRO 1R — Reference Tool Recovery** **only if**:
+
+- `TOOL_REFERENCE` does not exist, **and**
+- The tool currently installed **is the original reference tool**
+
+**MACRO 1R:**
+
+- Re-measures the current tool on the fixed sensor
+- Restores `TOOL_REFERENCE`
+- Does **not** alter workpiece zero
+
+⚠️ Never run **MACRO 1R** with a non-reference tool installed.
 
 
 
@@ -153,7 +205,7 @@ Do **NOT** use this macro:
 
 ---
 
-# 🔧 **MACRO 1 — Touch Plate & Reference Tool**
+# 🔧 **MACRO 1 — XYZ-Touch Plate & Reference Tool**
 
 ```gcode
 ; ==============================================================================
@@ -168,7 +220,7 @@ Do **NOT** use this macro:
 ; USER CONFIGURATION
 ; ==============================================================================
 ;XYZ Probe Plate settings
-%global.state.PLATE_THICKNESS = 12.05 ; Increasing drives bit closer to work piece
+%global.state.PLATE_THICKNESS = 11.95 ; Increasing drives bit closer to work piece
 %global.state.Z_FAST_PROBE_DISTANCE = 50
 %global.state.X_PLATE_OFFSET = -13.175
 %global.state.Y_PLATE_OFFSET = -13.175
@@ -178,7 +230,7 @@ Do **NOT** use this macro:
 %global.state.PROBE_X_LOCATION = -1.5
 %global.state.PROBE_Y_LOCATION = -1224
 %global.state.PROBE_Z_LOCATION = -5
-%global.state.PROBE_DISTANCE = 100
+%global.state.PROBE_DISTANCE = 150
 %global.state.PROBE_RAPID_FEEDRATE = 200
 
 %wait
@@ -307,7 +359,136 @@ G0 X0 Y0                            ; Rapid move to X0 Y0 work zero
 ; Restore Modal State
 [WCS] [PLANE] [UNITS] [DISTANCE] [FEEDRATE] [SPINDLE] [COOLANT]
 ````
+------
 
+# 🔧 **MACRO 1Z — Z-Touch Plate & Reference Tool**
+
+```gcode
+; =============================================================================
+; MACRO: Z-ONLY Touch Plate and Tool Height Reference / VERSION: 1.01Z
+; DESCRIPTION: Operator manually sets X/Y. Macro probes ONLY Z on touch plate,
+;              then measures tool height on fixed sensor.
+; Tool Height Reference based on neilferreri's work authored on Jul 14, 2019
+; https://github.com/cncjs/CNCjs-Macros/tree/master/Initial%20%26%20New%20Tool
+; ==============================================================================
+
+; ==============================================================================
+; USER CONFIGURATION
+; ==============================================================================
+; Z Probe Plate settings
+%global.state.PLATE_THICKNESS = 11.95             ; Increasing drives bit closer to work piece
+%global.state.Z_FAST_PROBE_DISTANCE = 50
+
+; Tool-Height settings (Machine Coordinates / G53)
+%global.state.SAFE_HEIGHT = -5                    ; Machine Z safe height (G53)
+%global.state.PROBE_X_LOCATION = -1.5             ; Machine X location of fixed sensor (G53)
+%global.state.PROBE_Y_LOCATION = -1224            ; Machine Y location of fixed sensor (G53)
+%global.state.PROBE_Z_LOCATION = -5               ; Machine Z approach height above sensor (G53)
+%global.state.PROBE_DISTANCE = 150                ; Max probe travel toward sensor
+%global.state.PROBE_RAPID_FEEDRATE = 200
+
+%wait
+; ==============================================================================
+
+M0 (Jog to your project's XY zero and set X=0 / Y=0 manually. Then jog to a flat area for Z probing, place the touch plate under the bit, attach the clip, and proceed.)
+
+; ==============================================================================
+; Initialize
+; ==============================================================================
+G90                                 ; Absolute positioning
+G21                                 ; Metric
+
+; Save current work position (so we can return to the start XY)
+%X0 = posx, Y0 = posy
+
+; ==============================================================================
+; Probe Z ONLY (Touch Plate)
+; ==============================================================================
+; Fast probe
+G91                                 ; Relative positioning
+G38.2 Z-[global.state.Z_FAST_PROBE_DISTANCE] F150 ; Probe Z down towards plate
+G90                                 ; Absolute positioning
+G92 Z[global.state.PLATE_THICKNESS] ; Set Z coordinate to plate thickness
+G1 Z14                              ; Linear move up to Z14
+
+; Slow probe for accuracy
+G91                                 ; Relative positioning
+G38.2 Z-15 F40                      ; Probe Z down slowly for accuracy
+G0 Z2                               ; Rapid retract Z by 2mm
+G4 P.25                             ; Dwell
+G38.2 Z-3 F20                       ; Second accuracy pass
+G90                                 ; Absolute positioning
+G92 Z[global.state.PLATE_THICKNESS] ; Reset Z coordinate to plate thickness
+G0 Z16                              ; Rapid move up to safe Z
+
+; ==============================================================================
+; Retract and Stow
+; ==============================================================================
+G0 Z20                              ; Rapid move Z up to safe height
+
+M0 (Stow touch plate and clip. Tool height will be checked next.)
+%wait
+
+; ==============================================================================
+; Save Modal State
+; ==============================================================================
+%WCS = modal.wcs
+%PLANE = modal.plane
+%UNITS = modal.units
+%DISTANCE = modal.distance
+%FEEDRATE = modal.feedrate
+%SPINDLE = modal.spindle
+%COOLANT = modal.coolant
+
+; ==============================================================================
+; Move to Fixed Sensor (Machine Coordinates)
+; ==============================================================================
+G21                                 ; Metric
+M5                                  ; Stop spindle
+G90                                 ; Absolute positioning
+
+G53 G0 Z[global.state.SAFE_HEIGHT]  ; Move Z to safe height in Machine Coordinates
+G53 X[global.state.PROBE_X_LOCATION] Y[global.state.PROBE_Y_LOCATION] ; Move XY to sensor in Machine Coordinates
+%wait
+
+G53 Z[global.state.PROBE_Z_LOCATION]; Move Z down to approach height in Machine Coordinates
+
+; ==============================================================================
+; Measure Tool Reference
+; ==============================================================================
+G91                                 ; Relative positioning
+G38.2 Z-[global.state.PROBE_DISTANCE] F[global.state.PROBE_RAPID_FEEDRATE] ; Fast probe Z towards sensor
+G0 Z2                               ; Rapid retract Z by 2mm
+G4 P.25                             ; Dwell
+G38.2 Z-5 F40                       ; Slow probe Z for accuracy
+G4 P.25                             ; Dwell
+G38.4 Z10 F20                       ; Probe Z away (verify switch release)
+G4 P.25                             ; Dwell
+G38.2 Z-2 F5                        ; Very slow probe Z for final accuracy
+G4 P.25                             ; Dwell
+G38.4 Z10 F5                        ; Very slow probe Z away
+G90                                 ; Absolute positioning
+
+%global.state.TOOL_REFERENCE = posz  ; Store current Z machine position
+%wait
+(TOOL_REFERENCE = [global.state.TOOL_REFERENCE])
+
+; ==============================================================================
+; Cleanup & Return (Keep Z High, Return to Start XY)
+; ==============================================================================
+G91                                 ; Relative positioning
+G0 Z5                               ; Rapid retract Z by 5mm
+G90                                 ; Absolute positioning
+G53 Z[global.state.SAFE_HEIGHT]     ; Rapid move Z to safe height in Machine Coordinates
+%wait
+
+G0 X[X0] Y[Y0]                      ; Return to the XY position where macro was started (work coordinates)
+
+; ==============================================================================
+; Restore Modal State
+; ==============================================================================
+[WCS] [PLANE] [UNITS] [DISTANCE] [FEEDRATE] [SPINDLE] [COOLANT]
+````
 ------
 
 # 🔧 **MACRO 2 — Tool Change**
@@ -330,7 +511,7 @@ G0 X0 Y0                            ; Rapid move to X0 Y0 work zero
 %global.state.PROBE_X_LOCATION = -1.5
 %global.state.PROBE_Y_LOCATION = -1224
 %global.state.PROBE_Z_LOCATION = -5
-%global.state.PROBE_DISTANCE = 100
+%global.state.PROBE_DISTANCE = 150
 %global.state.PROBE_RAPID_FEEDRATE = 200
 
 %wait
@@ -411,9 +592,16 @@ G0 X0 Y0                            ; Rapid move to X0 Y0 work zero
 
 ```gcode
 ; ============================================================================
-; MACRO 3: Park at Tool Sensor
-; VERSION: 1.01
+; MACRO 3: Park at Tool Sensor / VERSION: 1.01
 ; ============================================================================
+
+; ==============================================================================
+; USER CONFIGURATION
+; ==============================================================================
+%global.state.SAFE_HEIGHT = -5
+%global.state.PROBE_X_LOCATION = -1.5
+%global.state.PROBE_Y_LOCATION = -1224
+
 
 M5 (Ensuring spindle is stopped.)
 
@@ -421,10 +609,10 @@ G21
 G90
 
 ; Raise to safe machine Z
-G53 G0 Z-5
+G53 G0 Z[global.state.SAFE_HEIGHT]  ; Move Z to safe height in Machine Coordinates
 
 ; Go to tool height sensor
-G53 G0 X-1.5 Y-1224
+G53 G0 X[global.state.PROBE_X_LOCATION] Y[global.state.PROBE_Y_LOCATION] ; Move XY to sensor in Machine Coordinates
 ```
 
 ------
@@ -433,16 +621,21 @@ G53 G0 X-1.5 Y-1224
 
 ```gcode
 ; ============================================================================
-; MACRO 4: Return to Work
-; VERSION: 1.01
+; MACRO 4: Return to Work / VERSION: 1.01
 ; ============================================================================
+
+; ==============================================================================
+; USER CONFIGURATION
+; ==============================================================================
+%global.state.SAFE_HEIGHT = -5            ; Tool-Height setting
+
 
 M5 (Ensuring spindle is stopped.)
 G21
 G90
 
 ; Raise to safe machine Z
-G53 G0 Z-5
+G53 G0 Z[global.state.SAFE_HEIGHT]  ; Move Z to safe height in Machine Coordinates
 
 ; Go to work zero
 G0 X0 Y0
@@ -454,12 +647,10 @@ G0 X0 Y0
 
 ```gcode
 ; ==============================================================================
-; MACRO 1r: Reference Tool Recovery (Sensor Only)
-; VERSION: 1.02 (GRBL-safe)
+; MACRO 1r: Reference Tool Recovery (Sensor Only) / VERSION: 1.02 (GRBL-safe)
 ; DESCRIPTION:
 ;   Re-establish TOOL_REFERENCE using the current tool at the fixed sensor.
 ;   Only runs if TOOL_REFERENCE does NOT already exist.
-;   Prevents accidental overwriting of a valid tool reference.
 ;   For GRBL 1.1 — NO modal probe checks included.
 ; ==============================================================================
 
@@ -481,21 +672,21 @@ G0 X0 Y0
 %global.state.SAFE_HEIGHT = -5
 %global.state.PROBE_X_LOCATION = -1.5
 %global.state.PROBE_Y_LOCATION = -1224
-%global.state.PROBE_Z_LOCATION = -10
+%global.state.PROBE_Z_LOCATION = -5
 %global.state.PROBE_DISTANCE = 100
 %global.state.PROBE_RAPID_FEEDRATE = 200
+
 
 %wait
 
 M0 (This will SET TOOL_REFERENCE using the CURRENT tool.)
 
 ; ==============================================================================
-; Save Modal State & Position
+; Save State & Position
 ; ==============================================================================
-%X0 = posx
-%Y0 = posy
-%Z0 = posz
+%X0 = posx, Y0 = posy, Z0 = posz
 
+; Capture Modal State
 %WCS = modal.wcs
 %PLANE = modal.plane
 %UNITS = modal.units
@@ -517,7 +708,6 @@ G53 G0 X[global.state.PROBE_X_LOCATION] Y[global.state.PROBE_Y_LOCATION]
 
 G53 G0 Z[global.state.PROBE_Z_LOCATION]
 %wait
-
 
 ; ==============================================================================
 ; Probe Tool on Fixed Sensor (GRBL-valid sequence)
