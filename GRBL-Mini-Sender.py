@@ -13,6 +13,15 @@ import collections
 
 APP_NAME = "GRBL Mini Sender"
 
+def ui_font_label(size: int, weight: str = "normal") -> tuple[str, int] | tuple[str, int, str]:
+    family = "Segoe UI" if os.name == "nt" else "DejaVu Sans"
+    return (family, int(size), weight) if weight != "normal" else (family, int(size))
+
+
+def ui_font_mono(size: int) -> tuple[str, int]:
+    family = "Consolas" if os.name == "nt" else "DejaVu Sans Mono"
+    return (family, int(size))
+
 
 def clamp(v: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, v))
@@ -25,8 +34,11 @@ def app_dir() -> Path:
 
 
 def user_data_dir() -> Path:
-    appdata = os.environ.get("APPDATA", str(Path.home()))
-    d = Path(appdata) / APP_NAME
+    if os.name == "nt":
+        base = os.environ.get("APPDATA", str(Path.home()))
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))
+    d = Path(base) / APP_NAME
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -337,8 +349,8 @@ class DroPanel(ttk.LabelFrame):
         self.var_y = tk.StringVar(value="-")
         self.var_z = tk.StringVar(value="-")
 
-        font_label = ("Segoe UI", 9)
-        font_value = ("Consolas", 18)
+        font_label = ui_font_label(9)
+        font_value = ui_font_mono(18)
 
         grid = ttk.Frame(self)
         grid.pack(padx=10, pady=10, fill="x")
@@ -383,7 +395,7 @@ class IndicatorColumn(ttk.LabelFrame):
         wrap = ttk.Frame(self)
         wrap.pack(fill="x", padx=10, pady=10)
 
-        ttk.Label(wrap, text="Inputs", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(wrap, text="Inputs", font=ui_font_label(9, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
 
         self.led_x = LedIndicator(wrap, "X Limit")
         self.led_y = LedIndicator(wrap, "Y Limit")
@@ -400,7 +412,7 @@ class IndicatorColumn(ttk.LabelFrame):
 
         ttk.Separator(wrap, orient="horizontal").grid(row=9, column=0, sticky="ew", pady=10)
 
-        ttk.Label(wrap, text="Accessories", font=("Segoe UI", 9, "bold")).grid(row=10, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(wrap, text="Accessories", font=ui_font_label(9, "bold")).grid(row=10, column=0, sticky="w", pady=(0, 6))
 
         self.led_as = LedIndicator(wrap, "Spindle")
         self.led_af = LedIndicator(wrap, "Flood")
@@ -444,7 +456,7 @@ class GCodeView(ttk.Frame):
             self,
             wrap="none",
             height=max(4, int(default_height_lines)),
-            font=("Consolas", 11),
+            font=ui_font_mono(11),
             background="#202733",
             foreground="#d7dde5",
             insertbackground="#d7dde5",
@@ -1509,7 +1521,7 @@ class App(tk.Tk):
         style.map("Danger.TButton",
                   background=[("active", "#991b1b"), ("!active", "#b91c1c")],
                   foreground=[("active", "#fef2f2"), ("!active", "#fef2f2")])
-        style.configure("BigState.TLabel", font=("Segoe UI", 18, "bold"), foreground="#ffd166")
+        style.configure("BigState.TLabel", font=ui_font_label(18, "bold"), foreground="#ffd166")
 
     @staticmethod
     def _ellipsis(s: str, max_len: int = 60) -> str:
@@ -2017,7 +2029,7 @@ class App(tk.Tk):
         self.console = tk.Text(
             console_frame,
             height=max(4, int(self.console_height_lines)),
-            font=("Consolas", 10),
+            font=ui_font_mono(10),
             background="#202733",
             foreground="#cfd8e3",
             insertbackground="#cfd8e3",
