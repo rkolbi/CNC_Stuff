@@ -299,6 +299,33 @@ class ScrollableRoot(ttk.Frame):
             pass
 
 
+class Tooltip:
+    def __init__(self, widget, text: str):
+        self.widget = widget
+        self.text = text
+        self._tip = None
+        widget.bind("<Enter>", self._show)
+        widget.bind("<Leave>", self._hide)
+        widget.bind("<ButtonPress>", self._hide)
+
+    def _show(self, _):
+        if self._tip or not self.text:
+            return
+        x = self.widget.winfo_rootx() + 16
+        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 8
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.wm_overrideredirect(True)
+        self._tip.wm_geometry(f"+{x}+{y}")
+        lbl = tk.Label(self._tip, text=self.text, bg="#111827", fg="#e5e7eb",
+                       padx=8, pady=4, relief="solid", borderwidth=1, justify="left")
+        lbl.pack()
+
+    def _hide(self, _):
+        if self._tip:
+            self._tip.destroy()
+            self._tip = None
+
+
 class DroPanel(ttk.LabelFrame):
     def __init__(self, parent, title: str):
         super().__init__(parent, text=title)
@@ -405,7 +432,9 @@ class IndicatorColumn(ttk.LabelFrame):
 
 
 class GCodeView(ttk.Frame):
-    def __init__(self, parent, default_height_lines: int = 8):
+    def __init__(self, parent, default_height_lines: int = 8,
+                 sent_color: str = "#243249", ack_color: str = "#1f4d3a",
+                 show_sent: bool = True):
         super().__init__(parent)
         self.text = tk.Text(
             self,
@@ -432,9 +461,11 @@ class GCodeView(ttk.Frame):
         self.grid_columnconfigure(0, weight=1)
 
         self.text.tag_configure("lineno", foreground="#6b7280")
-        self.text.tag_configure("current", background="#1f4d3a", foreground="#eafff3")
+        self.text.tag_configure("current", background=ack_color, foreground="#eafff3")
+        self.text.tag_configure("sent", background=sent_color, foreground="#d7dde5")
         self._line_count = 0
         self._show_line_numbers = True
+        self._show_sent = bool(show_sent)
 
         # Read-only
         self.text.bind("<Key>", lambda e: "break")
@@ -458,17 +489,36 @@ class GCodeView(ttk.Frame):
         self.text.see("1.0")
 
     def highlight_line(self, line_no_1based: int):
+        self.highlight_lines(0, line_no_1based)
+
+    def highlight_lines(self, sent_line_1based: int, ack_line_1based: int):
         self.text.config(state="normal")
         self.text.tag_remove("current", "1.0", "end")
+        self.text.tag_remove("sent", "1.0", "end")
 
-        if 1 <= line_no_1based <= self._line_count:
-            ln = line_no_1based
+        if self._show_sent and 1 <= sent_line_1based <= self._line_count:
+            ln = sent_line_1based
+            start = f"{ln}.0"
+            end = f"{ln}.end"
+            self.text.tag_add("sent", start, end)
+
+        if 1 <= ack_line_1based <= self._line_count:
+            ln = ack_line_1based
             start = f"{ln}.0"
             end = f"{ln}.end"
             self.text.tag_add("current", start, end)
             self.text.see(start)
+        elif self._show_sent and 1 <= sent_line_1based <= self._line_count:
+            self.text.see(f"{sent_line_1based}.0")
 
         self.text.config(state="disabled")
+
+    def set_highlight_colors(self, sent_color: str, ack_color: str):
+        self.text.tag_configure("sent", background=sent_color)
+        self.text.tag_configure("current", background=ack_color)
+
+    def set_show_sent(self, show_sent: bool):
+        self._show_sent = bool(show_sent)
 
 
 class GrblWorker(threading.Thread):
@@ -487,6 +537,7 @@ class GrblWorker(threading.Thread):
 
         self.job_path: Path | None = None
         self.job_total = 0
+        self.job_sent = 0
         self.job_ok = 0
         self.job_active = False
 
@@ -513,6 +564,9 @@ class GrblWorker(threading.Thread):
         self._last_state = None
 
         self._job_fh = None
+
+    def _push_job_line(self):
+        self.ui_queue.put(("job_line", self.job_sent, self.job_ok, self.job_total))
 
     def open(self):
         self.ser = serial.Serial(self.port, self.baud, timeout=0.0, write_timeout=1.0)
@@ -687,6 +741,7 @@ class GrblWorker(threading.Thread):
     def start_job_from_file(self, job_path: Path, total_lines: int, stream_mode: str):
         self.job_path = job_path
         self.job_total = total_lines
+        self.job_sent = 0
         self.job_ok = 0
         self.job_active = True
         self.job_paused = False
@@ -700,19 +755,22 @@ class GrblWorker(threading.Thread):
         self.ui_queue.put(("job_state", "running"))
         self.ui_queue.put(("progress", 0, self.job_total))
         self.ui_queue.put(("active_stream_mode", self.stream_mode))
-        self.ui_queue.put(("job_line", 1, self.job_total))
+        self._push_job_line()
         self.ui_queue.put(("log", f"Job started ({self.stream_mode}): {job_path.name} ({self.job_total} lines)"))
 
     def finish_job(self, msg: str):
         self.job_active = False
         self.job_paused = False
         self.job_path = None
+        self.job_total = 0
+        self.job_sent = 0
+        self.job_ok = 0
         self._close_job_file()
         self._inflight_bytes = 0
         self._pending_lengths.clear()
         self.ui_queue.put(("job_state", "idle"))
         self.ui_queue.put(("active_stream_mode", "-"))
-        self.ui_queue.put(("job_line", 0, 0))
+        self._push_job_line()
         self.ui_queue.put(("log", msg))
 
     def cancel_job_local(self):
@@ -720,6 +778,7 @@ class GrblWorker(threading.Thread):
         self.job_paused = False
         self.job_path = None
         self.job_total = 0
+        self.job_sent = 0
         self.job_ok = 0
         self._close_job_file()
         self._inflight_bytes = 0
@@ -727,7 +786,7 @@ class GrblWorker(threading.Thread):
         self.ui_queue.put(("progress", 0, 0))
         self.ui_queue.put(("job_state", "idle"))
         self.ui_queue.put(("active_stream_mode", "-"))
-        self.ui_queue.put(("job_line", 0, 0))
+        self._push_job_line()
 
     def run_lines_blocking(self, lines: list[str]):
         for line in lines:
@@ -748,12 +807,13 @@ class GrblWorker(threading.Thread):
             return
 
         self.send_line(line)
+        self.job_sent += 1
+        self._push_job_line()
         st, resp = self._read_sync_response()
         if st == "ok":
             self.job_ok += 1
             self.ui_queue.put(("progress", self.job_ok, self.job_total))
-            nxt = min(self.job_ok + 1, self.job_total)
-            self.ui_queue.put(("job_line", nxt if self.job_ok < self.job_total else 0, self.job_total))
+            self._push_job_line()
             if self.job_total > 0 and self.job_ok >= self.job_total:
                 self.finish_job("Job complete")
         else:
@@ -787,12 +847,13 @@ class GrblWorker(threading.Thread):
                 line2 = raw2.strip()
                 if line2:
                     self.send_line(line2)
+                    self.job_sent += 1
+                    self._push_job_line()
                     st, resp = self._read_sync_response()
                     if st == "ok":
                         self.job_ok += 1
                         self.ui_queue.put(("progress", self.job_ok, self.job_total))
-                        nxt = min(self.job_ok + 1, self.job_total)
-                        self.ui_queue.put(("job_line", nxt if self.job_ok < self.job_total else 0, self.job_total))
+                        self._push_job_line()
                     else:
                         self.finish_job(f"Job stopped: {resp}")
                 break
@@ -810,6 +871,8 @@ class GrblWorker(threading.Thread):
 
             self._inflight_bytes += ln
             self._pending_lengths.append(ln)
+            self.job_sent += 1
+            self._push_job_line()
 
     def run(self):
         try:
@@ -826,7 +889,8 @@ class GrblWorker(threading.Thread):
 
         while self.running:
             try:
-                msg = self.tx_queue.get_nowait()
+                timeout = 0.002 if self.job_active else 0.02
+                msg = self.tx_queue.get(timeout=timeout)
             except queue.Empty:
                 msg = None
 
@@ -917,9 +981,7 @@ class GrblWorker(threading.Thread):
                 elif ok_count:
                     self.job_ok += ok_count
                     self.ui_queue.put(("progress", self.job_ok, self.job_total))
-                    nxt = min(self.job_ok + 1, self.job_total)
-                    self.ui_queue.put(("job_line", nxt if self.job_ok < self.job_total else 0, self.job_total))
-            time.sleep(0.002)
+                    self._push_job_line()
 
         self.close()
         self.ui_queue.put(("job_state", "disconnected"))
@@ -927,7 +989,7 @@ class GrblWorker(threading.Thread):
         self.ui_queue.put(("machine_state", "-"))
         self.ui_queue.put(("port_info", "-"))
         self.ui_queue.put(("grbl_id", "-"))
-        self.ui_queue.put(("job_line", 0, 0))
+        self._push_job_line()
         self.ui_queue.put(("log", "Disconnected"))
 
 
@@ -979,6 +1041,9 @@ class SettingsWindow(tk.Toplevel):
         self.console_height_var = tk.IntVar(value=int(self.app._cfg.get("console_height_lines", self.app.console_height_lines)))
 
         self.scrollable_main_var = tk.BooleanVar(value=bool(self.app._cfg.get("scrollable_main", False)))
+        self.sent_line_color_var = tk.StringVar(value=str(self.app._cfg.get("sent_line_color", self.app.sent_line_color)))
+        self.acked_line_color_var = tk.StringVar(value=str(self.app._cfg.get("acked_line_color", self.app.acked_line_color)))
+        self.show_sent_highlight_var = tk.BooleanVar(value=bool(self.app._cfg.get("show_sent_highlight", True)))
 
         conn = ttk.LabelFrame(outer, text="Connection")
         conn.grid(row=0, column=0, sticky="ew")
@@ -991,7 +1056,8 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(conn, text="Refresh", command=self._refresh_ports_ui).grid(row=0, column=2, padx=10, pady=(10, 6))
 
         ttk.Label(conn, text="Baud").grid(row=1, column=0, sticky="w", padx=10, pady=(0, 10))
-        ttk.Entry(conn, textvariable=self.baud_var, width=12).grid(row=1, column=1, sticky="w", padx=10, pady=(0, 10))
+        baud_entry = ttk.Entry(conn, textvariable=self.baud_var, width=12)
+        baud_entry.grid(row=1, column=1, sticky="w", padx=10, pady=(0, 10))
 
         stream = ttk.LabelFrame(outer, text="Streaming")
         stream.grid(row=1, column=0, sticky="ew", pady=(10, 0))
@@ -999,49 +1065,100 @@ class SettingsWindow(tk.Toplevel):
         row = ttk.Frame(stream)
         row.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
         ttk.Label(row, text="Default G-code send method").grid(row=0, column=0, sticky="w")
-        ttk.Combobox(row, state="readonly", textvariable=self.stream_mode_var, values=["sync", "buffered"], width=14)\
-            .grid(row=0, column=1, sticky="w", padx=(10, 0))
+        stream_mode_combo = ttk.Combobox(row, state="readonly", textvariable=self.stream_mode_var, values=["sync", "buffered"], width=14)
+        stream_mode_combo.grid(row=0, column=1, sticky="w", padx=(10, 0))
         ttk.Label(row, text="(sync = safest, buffered = faster)").grid(row=0, column=2, sticky="w", padx=(10, 0))
 
         row2 = ttk.Frame(stream)
         row2.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
         ttk.Label(row2, text="Planner min free blocks (buffered)").grid(row=0, column=0, sticky="w")
-        ttk.Entry(row2, textvariable=self.planner_free_min_var, width=6).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        planner_min_entry = ttk.Entry(row2, textvariable=self.planner_free_min_var, width=6)
+        planner_min_entry.grid(row=0, column=1, sticky="w", padx=(10, 0))
         ttk.Label(row2, text="(1-4)").grid(row=0, column=2, sticky="w", padx=(10, 0))
+
+        self.rx_buffer_bytes_var = tk.IntVar(value=int(self.app._cfg.get("rx_buffer_bytes", DEFAULT_GRBL_RX_BUFFER_BYTES)))
+        self.use_bf_autosize_var = tk.BooleanVar(value=bool(self.app._cfg.get("use_bf_autosize", True)))
+        self.use_planner_throttle_var = tk.BooleanVar(value=bool(self.app._cfg.get("use_planner_throttle", True)))
+
+        row3 = ttk.Frame(stream)
+        row3.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        ttk.Label(row3, text="RX buffer total bytes").grid(row=0, column=0, sticky="w")
+        rx_buffer_entry = ttk.Entry(row3, textvariable=self.rx_buffer_bytes_var, width=8)
+        rx_buffer_entry.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(row3, text="(32-4096)").grid(row=0, column=2, sticky="w", padx=(10, 0))
+
+        row4 = ttk.Frame(stream)
+        row4.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
+        use_bf_chk = ttk.Checkbutton(row4, text="Auto-size RX buffer using Bf:",
+                                     variable=self.use_bf_autosize_var)
+        use_bf_chk.grid(row=0, column=0, sticky="w")
+        use_throttle_chk = ttk.Checkbutton(row4, text="Planner throttle (buffered)",
+                                           variable=self.use_planner_throttle_var)
+        use_throttle_chk.grid(row=1, column=0, sticky="w", pady=(6, 0))
+
+        ttk.Label(stream, text="Note: Streaming/RX changes require reconnect.", foreground="#9ca3af")\
+            .grid(row=4, column=0, sticky="w", padx=10, pady=(0, 10))
+
+        Tooltip(stream_mode_combo, "sync: wait for ok after each line (safest).\\nbuffered: queue multiple lines for speed.")
+        Tooltip(planner_min_entry, "Minimum free planner blocks required before sending more (1-4).")
+        Tooltip(rx_buffer_entry, "Total RX buffer bytes to assume for buffered streaming.")
+        Tooltip(use_bf_chk, "Use status Bf: to auto-detect a larger RX buffer.")
+        Tooltip(use_throttle_chk, "Throttle buffered sending based on planner free blocks.")
 
         job = ttk.LabelFrame(outer, text="Job Safety")
         job.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        ttk.Checkbutton(job, text="After Cancel (Ctrl-X), also send $X to unlock (optional)",
-                        variable=self.cancel_unlock_var).grid(row=0, column=0, sticky="w", padx=10, pady=10)
+        cancel_unlock_chk = ttk.Checkbutton(job, text="After Cancel (Ctrl-X), also send $X to unlock (optional)",
+                                            variable=self.cancel_unlock_var)
+        cancel_unlock_chk.grid(row=0, column=0, sticky="w", padx=10, pady=10)
 
         jog = ttk.LabelFrame(outer, text="Jog Defaults")
         jog.grid(row=3, column=0, sticky="ew", pady=(10, 0))
 
         ttk.Label(jog, text="Default feed X").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
-        ttk.Entry(jog, textvariable=self.jog_feed_x, width=10).grid(row=0, column=1, sticky="w", padx=10, pady=(10, 6))
+        jog_feed_x_entry = ttk.Entry(jog, textvariable=self.jog_feed_x, width=10)
+        jog_feed_x_entry.grid(row=0, column=1, sticky="w", padx=10, pady=(10, 6))
 
         ttk.Label(jog, text="Default feed Y").grid(row=1, column=0, sticky="w", padx=10, pady=6)
-        ttk.Entry(jog, textvariable=self.jog_feed_y, width=10).grid(row=1, column=1, sticky="w", padx=10, pady=6)
+        jog_feed_y_entry = ttk.Entry(jog, textvariable=self.jog_feed_y, width=10)
+        jog_feed_y_entry.grid(row=1, column=1, sticky="w", padx=10, pady=6)
 
         ttk.Label(jog, text="Default feed Z").grid(row=2, column=0, sticky="w", padx=10, pady=(6, 10))
-        ttk.Entry(jog, textvariable=self.jog_feed_z, width=10).grid(row=2, column=1, sticky="w", padx=10, pady=(6, 10))
+        jog_feed_z_entry = ttk.Entry(jog, textvariable=self.jog_feed_z, width=10)
+        jog_feed_z_entry.grid(row=2, column=1, sticky="w", padx=10, pady=(6, 10))
 
         ttk.Label(jog, text="Step presets X/Y").grid(row=3, column=0, sticky="w", padx=10, pady=(0, 6))
-        ttk.Entry(jog, textvariable=self.step_presets_xy_var, width=38).grid(row=3, column=1, sticky="w", padx=10, pady=(0, 6))
+        step_presets_xy_entry = ttk.Entry(jog, textvariable=self.step_presets_xy_var, width=38)
+        step_presets_xy_entry.grid(row=3, column=1, sticky="w", padx=10, pady=(0, 6))
 
         ttk.Label(jog, text="Step presets Z").grid(row=4, column=0, sticky="w", padx=10, pady=(0, 10))
-        ttk.Entry(jog, textvariable=self.step_presets_z_var, width=38).grid(row=4, column=1, sticky="w", padx=10, pady=(0, 10))
+        step_presets_z_entry = ttk.Entry(jog, textvariable=self.step_presets_z_var, width=38)
+        step_presets_z_entry.grid(row=4, column=1, sticky="w", padx=10, pady=(0, 10))
 
         ui = ttk.LabelFrame(outer, text="UI Layout")
         ui.grid(row=4, column=0, sticky="ew", pady=(10, 0))
         ttk.Label(ui, text="G-code window height (lines)").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
-        ttk.Entry(ui, textvariable=self.gcode_height_var, width=10).grid(row=0, column=1, sticky="w", padx=10, pady=(10, 6))
+        gcode_height_entry = ttk.Entry(ui, textvariable=self.gcode_height_var, width=10)
+        gcode_height_entry.grid(row=0, column=1, sticky="w", padx=10, pady=(10, 6))
 
         ttk.Label(ui, text="Console window height (lines)").grid(row=1, column=0, sticky="w", padx=10, pady=(0, 6))
-        ttk.Entry(ui, textvariable=self.console_height_var, width=10).grid(row=1, column=1, sticky="w", padx=10, pady=(0, 6))
+        console_height_entry = ttk.Entry(ui, textvariable=self.console_height_var, width=10)
+        console_height_entry.grid(row=1, column=1, sticky="w", padx=10, pady=(0, 6))
 
-        ttk.Checkbutton(ui, text="Scrollable main window (applies after restart)",
-                        variable=self.scrollable_main_var).grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 10))
+        ttk.Label(ui, text="Sent line color (hex)").grid(row=2, column=0, sticky="w", padx=10, pady=(0, 6))
+        sent_color_entry = ttk.Entry(ui, textvariable=self.sent_line_color_var, width=12)
+        sent_color_entry.grid(row=2, column=1, sticky="w", padx=10, pady=(0, 6))
+
+        ttk.Label(ui, text="Acked line color (hex)").grid(row=3, column=0, sticky="w", padx=10, pady=(0, 6))
+        ack_color_entry = ttk.Entry(ui, textvariable=self.acked_line_color_var, width=12)
+        ack_color_entry.grid(row=3, column=1, sticky="w", padx=10, pady=(0, 6))
+
+        show_sent_chk = ttk.Checkbutton(ui, text="Show sent line highlight",
+                                        variable=self.show_sent_highlight_var)
+        show_sent_chk.grid(row=4, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 6))
+
+        scrollable_chk = ttk.Checkbutton(ui, text="Scrollable main window (applies after restart)",
+                                         variable=self.scrollable_main_var)
+        scrollable_chk.grid(row=5, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 10))
 
         macros = ttk.LabelFrame(outer, text="Macros")
         macros.grid(row=5, column=0, sticky="ew", pady=(10, 0))
@@ -1097,6 +1214,15 @@ class SettingsWindow(tk.Toplevel):
             return
 
         try:
+            rx_bytes = int(self.rx_buffer_bytes_var.get())
+        except Exception:
+            messagebox.showerror("Invalid RX buffer", "RX buffer bytes must be an integer.")
+            return
+        if rx_bytes < 32 or rx_bytes > 4096:
+            messagebox.showerror("Invalid RX buffer", "RX buffer bytes must be between 32 and 4096.")
+            return
+
+        try:
             jx = float(self.jog_feed_x.get())
             jy = float(self.jog_feed_y.get())
             jz = float(self.jog_feed_z.get())
@@ -1136,6 +1262,22 @@ class SettingsWindow(tk.Toplevel):
             messagebox.showerror("Invalid Console height", "Console height must be between 4 and 60 lines.")
             return
 
+        def normalize_color(raw: str) -> str | None:
+            s = (raw or "").strip()
+            if len(s) != 7 or not s.startswith("#"):
+                return None
+            hexpart = s[1:]
+            for ch in hexpart:
+                if ch not in "0123456789abcdefABCDEF":
+                    return None
+            return s.lower()
+
+        sent_color = normalize_color(self.sent_line_color_var.get())
+        ack_color = normalize_color(self.acked_line_color_var.get())
+        if not sent_color or not ack_color:
+            messagebox.showerror("Invalid highlight color", "Use hex colors like #243249.")
+            return
+
         old_scroll = bool(self.app._cfg.get("scrollable_main", False))
         new_scroll = bool(self.scrollable_main_var.get())
 
@@ -1143,6 +1285,9 @@ class SettingsWindow(tk.Toplevel):
         self.app._cfg["baud"] = baud
         self.app._cfg["stream_mode"] = sm
         self.app._cfg["planner_free_min"] = planner_min
+        self.app._cfg["rx_buffer_bytes"] = rx_bytes
+        self.app._cfg["use_bf_autosize"] = bool(self.use_bf_autosize_var.get())
+        self.app._cfg["use_planner_throttle"] = bool(self.use_planner_throttle_var.get())
         self.app._cfg["jog_feed_x"] = jx
         self.app._cfg["jog_feed_y"] = jy
         self.app._cfg["jog_feed_z"] = jz
@@ -1152,6 +1297,9 @@ class SettingsWindow(tk.Toplevel):
         self.app._cfg["gcode_height_lines"] = gh
         self.app._cfg["console_height_lines"] = ch
         self.app._cfg["scrollable_main"] = new_scroll
+        self.app._cfg["sent_line_color"] = sent_color
+        self.app._cfg["acked_line_color"] = ack_color
+        self.app._cfg["show_sent_highlight"] = bool(self.show_sent_highlight_var.get())
 
         save_config(self.app._cfg)
         self.app._log("[info] Settings saved.")
@@ -1165,6 +1313,8 @@ class SettingsWindow(tk.Toplevel):
 
         self.app.set_gcode_height_lines(gh)
         self.app.set_console_height_lines(ch)
+        self.app.set_gcode_highlight_colors(sent_color, ack_color)
+        self.app.set_show_sent_highlight(bool(self.show_sent_highlight_var.get()))
 
         if self.app.worker:
             self.app._log("[info] Connection settings changed. Disconnect/reconnect to apply port/baud changes.")
@@ -1180,6 +1330,8 @@ class App(tk.Tk):
     DEFAULT_STEP_PRESETS_XY = ["0.1", "0.25", "0.5", "1.0", "5.0", "10", "25", "50", "100", "200", "400"]
     DEFAULT_STEP_PRESETS_Z = ["0.1", "0.25", "0.5", "1.0", "5.0", "10", "25", "50"]
     LEGACY_STEP_PRESETS = ["0.25", "0.5", "1.0", "5.0", "10", "25", "50", "100"]
+    DEFAULT_SENT_LINE_COLOR = "#243249"
+    DEFAULT_ACK_LINE_COLOR = "#1f4d3a"
 
     def __init__(self):
         super().__init__()
@@ -1224,6 +1376,9 @@ class App(tk.Tk):
 
         self.gcode_height_lines = int(self._cfg.get("gcode_height_lines", 8))
         self.console_height_lines = int(self._cfg.get("console_height_lines", 8))
+        self.sent_line_color = str(self._cfg.get("sent_line_color", self.DEFAULT_SENT_LINE_COLOR))
+        self.acked_line_color = str(self._cfg.get("acked_line_color", self.DEFAULT_ACK_LINE_COLOR))
+        self.show_sent_highlight = bool(self._cfg.get("show_sent_highlight", True))
 
         self._line_px_gcode = 18
         self.feed_override_current = 100
@@ -1239,6 +1394,8 @@ class App(tk.Tk):
         self.raw_status_var = tk.StringVar(value="")
         self.big_state_var = tk.StringVar(value="IDLE")
         self._override_updating = False
+        self._last_mpos: tuple[float, float, float] | None = None
+        self._last_wco: tuple[float, float, float] | None = None
 
         self._build_styles()
         self._build_ui()
@@ -1314,7 +1471,12 @@ class App(tk.Tk):
 
         self.gcode_height_lines = int(self._cfg.get("gcode_height_lines", self.gcode_height_lines))
         self.console_height_lines = int(self._cfg.get("console_height_lines", self.console_height_lines))
+        self.sent_line_color = str(self._cfg.get("sent_line_color", self.sent_line_color))
+        self.acked_line_color = str(self._cfg.get("acked_line_color", self.acked_line_color))
+        self.show_sent_highlight = bool(self._cfg.get("show_sent_highlight", self.show_sent_highlight))
         self._apply_heights_live()
+        self.set_gcode_highlight_colors(self.sent_line_color, self.acked_line_color)
+        self.set_show_sent_highlight(self.show_sent_highlight)
 
     def _write_config(self):
         cfg = dict(self._cfg)
@@ -1328,6 +1490,9 @@ class App(tk.Tk):
         cfg["step_presets_z"] = list(self.step_presets_z)
         cfg["gcode_height_lines"] = int(self.gcode_height_lines)
         cfg["console_height_lines"] = int(self.console_height_lines)
+        cfg["sent_line_color"] = str(self.sent_line_color)
+        cfg["acked_line_color"] = str(self.acked_line_color)
+        cfg["show_sent_highlight"] = bool(self.show_sent_highlight)
         save_config(cfg)
         self._cfg = cfg
 
@@ -1339,6 +1504,23 @@ class App(tk.Tk):
     def set_console_height_lines(self, n: int):
         self.console_height_lines = max(4, int(n))
         self._apply_heights_live()
+        self._write_config()
+
+    def set_gcode_highlight_colors(self, sent_color: str, ack_color: str):
+        self.sent_line_color = sent_color
+        self.acked_line_color = ack_color
+        try:
+            self.gcode_view.set_highlight_colors(sent_color, ack_color)
+        except Exception:
+            pass
+        self._write_config()
+
+    def set_show_sent_highlight(self, show_sent: bool):
+        self.show_sent_highlight = bool(show_sent)
+        try:
+            self.gcode_view.set_show_sent(self.show_sent_highlight)
+        except Exception:
+            pass
         self._write_config()
 
     def set_step_presets_xy(self, presets: list[str]):
@@ -1721,11 +1903,18 @@ class App(tk.Tk):
         gcode_frame = ttk.LabelFrame(self.left_pane, text="G-code")
         gcode_frame.grid_rowconfigure(0, weight=1)
         gcode_frame.grid_columnconfigure(0, weight=1)
-        self.gcode_view = GCodeView(gcode_frame, default_height_lines=self.gcode_height_lines)
+        self.gcode_view = GCodeView(
+            gcode_frame,
+            default_height_lines=self.gcode_height_lines,
+            sent_color=self.sent_line_color,
+            ack_color=self.acked_line_color,
+            show_sent=self.show_sent_highlight
+        )
         self.gcode_view.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
 
         console_frame = ttk.LabelFrame(self.left_pane, text="Console")
         console_frame.grid_columnconfigure(0, weight=1)
+        console_frame.grid_columnconfigure(1, weight=0)
         console_frame.grid_rowconfigure(0, weight=1)
 
         self.console = tk.Text(
@@ -1738,10 +1927,15 @@ class App(tk.Tk):
             relief="flat",
             borderwidth=0
         )
-        self.console.grid(row=0, column=0, sticky="nsew", padx=6, pady=(6, 4))
+        self.console.config(state="disabled")
+        self.console.bind("<Key>", lambda e: "break")
+        self.console_vsb = ttk.Scrollbar(console_frame, orient="vertical", command=self.console.yview)
+        self.console.configure(yscrollcommand=self.console_vsb.set)
+        self.console.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=(6, 4))
+        self.console_vsb.grid(row=0, column=1, sticky="ns", padx=(0, 6), pady=(6, 4))
 
         cmd_row = ttk.Frame(console_frame)
-        cmd_row.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 6))
+        cmd_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
         cmd_row.grid_columnconfigure(1, weight=1)
 
         ttk.Label(cmd_row, text="Command").grid(row=0, column=0, sticky="w")
@@ -2142,7 +2336,14 @@ class App(tk.Tk):
         self.send_line("$X")
 
     def reset_wpos_to_mpos(self):
-        self.send_line("G10 L2 P0 X0 Y0 Z0")
+        if not self.worker:
+            return
+        if not self._last_mpos:
+            messagebox.showerror("Position unknown", "No MPos data yet; wait for status and try again.")
+            return
+        x, y, z = self._last_mpos
+        self.send_line(f"G10 L2 P0 X{x:.3f} Y{y:.3f} Z{z:.3f}")
+        self._log("[info] Set WCO to current MPos (WPos -> 0,0,0).")
 
     def set_wpos_axis(self, axis: str):
         axis = axis.upper()
@@ -2156,7 +2357,9 @@ class App(tk.Tk):
             self._log("[rt] Jog Cancel")
 
     def clear_console(self):
+        self.console.config(state="normal")
         self.console.delete("1.0", "end")
+        self.console.config(state="disabled")
 
     def run_macro_file(self, macro_index: int):
         if not self.worker:
@@ -2235,12 +2438,12 @@ class App(tk.Tk):
                     self.progress["maximum"] = max(1, total)
                     self.progress["value"] = min(done, total if total else done)
                 elif kind == "job_line":
-                    line_no, total = msg[1], msg[2]
-                    self.gcode_view.highlight_line(int(line_no) if line_no else 0)
-                    if line_no and total:
-                        self.job_line_var.set(f"Line: {line_no}/{total}")
-                    elif total:
-                        self.job_line_var.set(f"Line: 0/{total}")
+                    sent = msg[1]
+                    ack = msg[2] if len(msg) > 2 else 0
+                    total = msg[3] if len(msg) > 3 else 0
+                    self.gcode_view.highlight_lines(int(sent) if sent else 0, int(ack) if ack else 0)
+                    if total:
+                        self.job_line_var.set(f"Sent: {sent}/{total}  Ack: {ack}/{total}")
                     else:
                         self.job_line_var.set("Line: -")
                 elif kind == "active_stream_mode":
@@ -2275,6 +2478,10 @@ class App(tk.Tk):
                     mpos = parse_vec3(parse_field(status_line, "MPos:"))
                     wpos = parse_vec3(parse_field(status_line, "WPos:"))
                     wco  = parse_vec3(parse_field(status_line, "WCO:"))
+                    if mpos is not None:
+                        self._last_mpos = mpos
+                    if wco is not None:
+                        self._last_wco = wco
                     if wpos is None:
                         wpos = compute_wpos(mpos, wco)
 
@@ -2287,15 +2494,18 @@ class App(tk.Tk):
         self.after(50, self._poll_ui_queue)
 
     def _log(self, text: str):
+        self.console.config(state="normal")
         self.console.insert("end", text + "\n")
         self.console.see("end")
         max_lines = 2000
         try:
             line_count = int(self.console.index("end-1c").split(".", 1)[0])
         except Exception:
+            self.console.config(state="disabled")
             return
         if line_count > max_lines:
             self.console.delete("1.0", f"{line_count - max_lines + 1}.0")
+        self.console.config(state="disabled")
 
 
 if __name__ == "__main__":
