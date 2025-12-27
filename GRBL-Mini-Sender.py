@@ -43,6 +43,10 @@ def user_macros_dir() -> Path:
 
 CONFIG_PATH = user_config_path()
 DEFAULT_GRBL_RX_BUFFER_BYTES = 128
+# Sync-mode / ack wait timeouts
+DEFAULT_SYNC_TIMEOUT_S = 2.0
+HOMING_SYNC_TIMEOUT_S = 60.0
+SYSTEM_SYNC_TIMEOUT_S = 10.0  # other $-commands
 
 # GRBL realtime bytes
 CTRL_X = b"\x18"
@@ -230,7 +234,7 @@ def list_serial_ports_detailed() -> list[tuple[str, str]]:
         vidpid = ""
         if p.vid is not None and p.pid is not None:
             vidpid = f" (VID:PID {p.vid:04X}:{p.pid:04X})"
-        display = f"{p.device} — {desc}{vidpid}"
+        display = f"{p.device} - {desc}{vidpid}"
         items.append((display, p.device))
     return items
 
@@ -525,6 +529,9 @@ class GrblWorker(threading.Thread):
     def __init__(self, port: str, baud: int, rx_buffer_total: int, use_bf_autosize: bool,
                  use_planner_throttle: bool, planner_free_min: int,
                  cancel_unlock: bool,
+                 sync_timeout_s: float,
+                 homing_sync_timeout_s: float,
+                 system_sync_timeout_s: float,
                  tx_queue: queue.Queue, ui_queue: queue.Queue):
         super().__init__(daemon=True)
         self.port = port
@@ -554,6 +561,9 @@ class GrblWorker(threading.Thread):
         self._use_planner_throttle = bool(use_planner_throttle)
         self._planner_free_min = clamp(int(planner_free_min), 1, 4)
         self._cancel_unlock = bool(cancel_unlock)
+        self._sync_timeout_s = float(sync_timeout_s)
+        self._homing_sync_timeout_s = float(homing_sync_timeout_s)
+        self._system_sync_timeout_s = float(system_sync_timeout_s)
 
         self._last_planner_free = None
         self._last_rx_free = None
@@ -718,7 +728,19 @@ class GrblWorker(threading.Thread):
 
         return ok_count, fatal
 
-    def _read_sync_response(self):
+    def _sync_timeout_for_line(self, line: str) -> float:
+        s = (line or "").strip().upper()
+        if not s:
+            return self._sync_timeout_s
+        if s.startswith("$H"):
+            return self._homing_sync_timeout_s
+        if s.startswith("$"):
+            return self._system_sync_timeout_s
+        return self._sync_timeout_s
+
+    def _read_sync_response(self, timeout_s: float = DEFAULT_SYNC_TIMEOUT_S):
+        deadline = time.monotonic() + float(timeout_s)
+
         while self.running:
             for line in self._pop_lines_from_rx():
                 if line.startswith("<") and line.endswith(">"):
@@ -735,8 +757,13 @@ class GrblWorker(threading.Thread):
                     return ("fatal", line)
 
                 self.ui_queue.put(("log", f"[grbl] {line}"))
+
+            if time.monotonic() >= deadline:
+                return ("timeout", f"No response from controller (waiting for ok) after {timeout_s:.1f}s.")
+
             time.sleep(0.005)
-        return ("stopped", "")
+
+        return ("stopped", "stopped")
 
     def start_job_from_file(self, job_path: Path, total_lines: int, stream_mode: str):
         self.job_path = job_path
@@ -791,9 +818,9 @@ class GrblWorker(threading.Thread):
     def run_lines_blocking(self, lines: list[str]):
         for line in lines:
             self.send_line(line)
-            st, resp = self._read_sync_response()
+            st, resp = self._read_sync_response(timeout_s=self._sync_timeout_for_line(line))
             if st != "ok":
-                self.ui_queue.put(("error", f"Macro stopped: {resp}"))
+                self.ui_queue.put(("error", f"Macro stopped ({st}): {resp}"))
                 break
 
     def _stream_step_sync(self):
@@ -809,7 +836,7 @@ class GrblWorker(threading.Thread):
         self.send_line(line)
         self.job_sent += 1
         self._push_job_line()
-        st, resp = self._read_sync_response()
+        st, resp = self._read_sync_response(timeout_s=self._sync_timeout_for_line(line))
         if st == "ok":
             self.job_ok += 1
             self.ui_queue.put(("progress", self.job_ok, self.job_total))
@@ -841,21 +868,21 @@ class GrblWorker(threading.Thread):
             ln = len(payload)
 
             if ln > self._buffer_total:
-                self.ui_queue.put(("log", f"[warn] Line exceeds RX buffer ({ln} > {self._buffer_total}); sending sync."))
-                self._job_fh.seek(pos)
-                raw2 = self._job_fh.readline()
-                line2 = raw2.strip()
-                if line2:
-                    self.send_line(line2)
-                    self.job_sent += 1
+                self.ui_queue.put(("log", f"[warn] Line exceeds RX buffer ({ln} > {self._buffer_total}); waiting for buffer to drain."))
+                if self._inflight_bytes > 0 or self._pending_lengths:
+                    self._job_fh.seek(pos)
+                    break
+
+                self.send_line(line)
+                self.job_sent += 1
+                self._push_job_line()
+                st, resp = self._read_sync_response(timeout_s=self._sync_timeout_for_line(line))
+                if st == "ok":
+                    self.job_ok += 1
+                    self.ui_queue.put(("progress", self.job_ok, self.job_total))
                     self._push_job_line()
-                    st, resp = self._read_sync_response()
-                    if st == "ok":
-                        self.job_ok += 1
-                        self.ui_queue.put(("progress", self.job_ok, self.job_total))
-                        self._push_job_line()
-                    else:
-                        self.finish_job(f"Job stopped: {resp}")
+                else:
+                    self.finish_job(f"Job stopped: {resp}")
                 break
 
             if self._inflight_bytes + ln > self._buffer_total:
@@ -904,10 +931,11 @@ class GrblWorker(threading.Thread):
                     self.send_realtime(msg[1])
 
                 elif kind == "line":
-                    self.send_line(msg[1])
-                    st, resp = self._read_sync_response()
+                    line = msg[1]
+                    self.send_line(line)
+                    st, resp = self._read_sync_response(timeout_s=self._sync_timeout_for_line(line))
                     if st != "ok":
-                        self.ui_queue.put(("error", f"Command failed: {resp}"))
+                        self.ui_queue.put(("error", f"Command {st}: {resp}"))
 
                 elif kind == "start_job_file":
                     path, total, mode = msg[1], msg[2], msg[3]
@@ -946,7 +974,7 @@ class GrblWorker(threading.Thread):
                     if self._cancel_unlock:
                         try:
                             self.send_line("$X")
-                            _ = self._read_sync_response()
+                            _ = self._read_sync_response(timeout_s=self._sync_timeout_for_line("$X"))
                         except Exception:
                             pass
 
@@ -1017,6 +1045,8 @@ class SettingsWindow(tk.Toplevel):
 
         outer = ttk.Frame(self, style="Settings.TFrame")
         outer.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_columnconfigure(1, weight=1)
 
         self.port_map = {}
         self._refresh_ports()
@@ -1046,7 +1076,7 @@ class SettingsWindow(tk.Toplevel):
         self.show_sent_highlight_var = tk.BooleanVar(value=bool(self.app._cfg.get("show_sent_highlight", True)))
 
         conn = ttk.LabelFrame(outer, text="Connection")
-        conn.grid(row=0, column=0, sticky="ew")
+        conn.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         conn.grid_columnconfigure(1, weight=1)
 
         ttk.Label(conn, text="Port").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
@@ -1060,7 +1090,7 @@ class SettingsWindow(tk.Toplevel):
         baud_entry.grid(row=1, column=1, sticky="w", padx=10, pady=(0, 10))
 
         stream = ttk.LabelFrame(outer, text="Streaming")
-        stream.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        stream.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(10, 0))
 
         row = ttk.Frame(stream)
         row.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
@@ -1079,6 +1109,9 @@ class SettingsWindow(tk.Toplevel):
         self.rx_buffer_bytes_var = tk.IntVar(value=int(self.app._cfg.get("rx_buffer_bytes", DEFAULT_GRBL_RX_BUFFER_BYTES)))
         self.use_bf_autosize_var = tk.BooleanVar(value=bool(self.app._cfg.get("use_bf_autosize", True)))
         self.use_planner_throttle_var = tk.BooleanVar(value=bool(self.app._cfg.get("use_planner_throttle", True)))
+        self.sync_timeout_var = tk.DoubleVar(value=float(self.app._cfg.get("sync_timeout_s", DEFAULT_SYNC_TIMEOUT_S)))
+        self.homing_sync_timeout_var = tk.DoubleVar(value=float(self.app._cfg.get("homing_sync_timeout_s", HOMING_SYNC_TIMEOUT_S)))
+        self.system_sync_timeout_var = tk.DoubleVar(value=float(self.app._cfg.get("system_sync_timeout_s", SYSTEM_SYNC_TIMEOUT_S)))
 
         row3 = ttk.Frame(stream)
         row3.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
@@ -1096,23 +1129,38 @@ class SettingsWindow(tk.Toplevel):
                                            variable=self.use_planner_throttle_var)
         use_throttle_chk.grid(row=1, column=0, sticky="w", pady=(6, 0))
 
+        row5 = ttk.Frame(stream)
+        row5.grid(row=4, column=0, sticky="ew", padx=10, pady=(0, 10))
+        ttk.Label(row5, text="Sync timeout (s)").grid(row=0, column=0, sticky="w")
+        sync_timeout_entry = ttk.Entry(row5, textvariable=self.sync_timeout_var, width=8)
+        sync_timeout_entry.grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(row5, text="Homing timeout (s)").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        homing_timeout_entry = ttk.Entry(row5, textvariable=self.homing_sync_timeout_var, width=8)
+        homing_timeout_entry.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(6, 0))
+        ttk.Label(row5, text="System $ timeout (s)").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        system_timeout_entry = ttk.Entry(row5, textvariable=self.system_sync_timeout_var, width=8)
+        system_timeout_entry.grid(row=2, column=1, sticky="w", padx=(10, 0), pady=(6, 0))
+
         ttk.Label(stream, text="Note: Streaming/RX changes require reconnect.", foreground="#9ca3af")\
-            .grid(row=4, column=0, sticky="w", padx=10, pady=(0, 10))
+            .grid(row=5, column=0, sticky="w", padx=10, pady=(0, 10))
 
         Tooltip(stream_mode_combo, "sync: wait for ok after each line (safest).\\nbuffered: queue multiple lines for speed.")
         Tooltip(planner_min_entry, "Minimum free planner blocks required before sending more (1-4).")
         Tooltip(rx_buffer_entry, "Total RX buffer bytes to assume for buffered streaming.")
         Tooltip(use_bf_chk, "Use status Bf: to auto-detect a larger RX buffer.")
         Tooltip(use_throttle_chk, "Throttle buffered sending based on planner free blocks.")
+        Tooltip(sync_timeout_entry, "Max wait for ok in sync mode (seconds).")
+        Tooltip(homing_timeout_entry, "Max wait for ok after $H (seconds).")
+        Tooltip(system_timeout_entry, "Max wait for ok after other $ commands (seconds).")
 
         job = ttk.LabelFrame(outer, text="Job Safety")
-        job.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        job.grid(row=2, column=0, sticky="ew", padx=(0, 8), pady=(10, 0))
         cancel_unlock_chk = ttk.Checkbutton(job, text="After Cancel (Ctrl-X), also send $X to unlock (optional)",
                                             variable=self.cancel_unlock_var)
         cancel_unlock_chk.grid(row=0, column=0, sticky="w", padx=10, pady=10)
 
         jog = ttk.LabelFrame(outer, text="Jog Defaults")
-        jog.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        jog.grid(row=0, column=1, sticky="ew", padx=(8, 0))
 
         ttk.Label(jog, text="Default feed X").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
         jog_feed_x_entry = ttk.Entry(jog, textvariable=self.jog_feed_x, width=10)
@@ -1135,7 +1183,7 @@ class SettingsWindow(tk.Toplevel):
         step_presets_z_entry.grid(row=4, column=1, sticky="w", padx=10, pady=(0, 10))
 
         ui = ttk.LabelFrame(outer, text="UI Layout")
-        ui.grid(row=4, column=0, sticky="ew", pady=(10, 0))
+        ui.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
         ttk.Label(ui, text="G-code window height (lines)").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
         gcode_height_entry = ttk.Entry(ui, textvariable=self.gcode_height_var, width=10)
         gcode_height_entry.grid(row=0, column=1, sticky="w", padx=10, pady=(10, 6))
@@ -1161,12 +1209,12 @@ class SettingsWindow(tk.Toplevel):
         scrollable_chk.grid(row=5, column=0, columnspan=2, sticky="w", padx=10, pady=(0, 10))
 
         macros = ttk.LabelFrame(outer, text="Macros")
-        macros.grid(row=5, column=0, sticky="ew", pady=(10, 0))
+        macros.grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
         ttk.Label(macros, text=f"Macro folder: {self.app.macros_dir}").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
         ttk.Button(macros, text="Reload macro names", command=self.app.refresh_macro_labels).grid(row=1, column=0, sticky="w", padx=10, pady=(0, 10))
 
         btns = ttk.Frame(outer)
-        btns.grid(row=6, column=0, sticky="ew", pady=(12, 0))
+        btns.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         ttk.Button(btns, text="Cancel", command=self.destroy).grid(row=0, column=0, padx=(0, 6))
         ttk.Button(btns, text="Save", command=self._save).grid(row=0, column=1)
 
@@ -1220,6 +1268,23 @@ class SettingsWindow(tk.Toplevel):
             return
         if rx_bytes < 32 or rx_bytes > 4096:
             messagebox.showerror("Invalid RX buffer", "RX buffer bytes must be between 32 and 4096.")
+            return
+
+        def parse_timeout(raw: float, label: str) -> float | None:
+            try:
+                v = float(raw)
+            except Exception:
+                messagebox.showerror("Invalid timeout", f"{label} must be a number.")
+                return None
+            if v <= 0:
+                messagebox.showerror("Invalid timeout", f"{label} must be greater than 0.")
+                return None
+            return v
+
+        sync_timeout_s = parse_timeout(self.sync_timeout_var.get(), "Sync timeout")
+        homing_timeout_s = parse_timeout(self.homing_sync_timeout_var.get(), "Homing timeout")
+        system_timeout_s = parse_timeout(self.system_sync_timeout_var.get(), "System timeout")
+        if sync_timeout_s is None or homing_timeout_s is None or system_timeout_s is None:
             return
 
         try:
@@ -1288,6 +1353,9 @@ class SettingsWindow(tk.Toplevel):
         self.app._cfg["rx_buffer_bytes"] = rx_bytes
         self.app._cfg["use_bf_autosize"] = bool(self.use_bf_autosize_var.get())
         self.app._cfg["use_planner_throttle"] = bool(self.use_planner_throttle_var.get())
+        self.app._cfg["sync_timeout_s"] = sync_timeout_s
+        self.app._cfg["homing_sync_timeout_s"] = homing_timeout_s
+        self.app._cfg["system_sync_timeout_s"] = system_timeout_s
         self.app._cfg["jog_feed_x"] = jx
         self.app._cfg["jog_feed_y"] = jy
         self.app._cfg["jog_feed_z"] = jz
@@ -1304,6 +1372,7 @@ class SettingsWindow(tk.Toplevel):
         save_config(self.app._cfg)
         self.app._log("[info] Settings saved.")
 
+        self.app.set_sync_timeouts(sync_timeout_s, homing_timeout_s, system_timeout_s)
         self.app.jog_feed_x.set(jx)
         self.app.jog_feed_y.set(jy)
         self.app.jog_feed_z.set(jz)
@@ -1379,6 +1448,9 @@ class App(tk.Tk):
         self.sent_line_color = str(self._cfg.get("sent_line_color", self.DEFAULT_SENT_LINE_COLOR))
         self.acked_line_color = str(self._cfg.get("acked_line_color", self.DEFAULT_ACK_LINE_COLOR))
         self.show_sent_highlight = bool(self._cfg.get("show_sent_highlight", True))
+        self.sync_timeout_s = float(self._cfg.get("sync_timeout_s", DEFAULT_SYNC_TIMEOUT_S))
+        self.homing_sync_timeout_s = float(self._cfg.get("homing_sync_timeout_s", HOMING_SYNC_TIMEOUT_S))
+        self.system_sync_timeout_s = float(self._cfg.get("system_sync_timeout_s", SYSTEM_SYNC_TIMEOUT_S))
 
         self._line_px_gcode = 18
         self.feed_override_current = 100
@@ -1442,7 +1514,11 @@ class App(tk.Tk):
     @staticmethod
     def _ellipsis(s: str, max_len: int = 60) -> str:
         s = (s or "").strip()
-        return s if len(s) <= max_len else (s[: max_len - 1] + "…")
+        if len(s) <= max_len:
+            return s
+        if max_len <= 3:
+            return s[:max_len]
+        return s[: max_len - 3] + "..."
 
     def _apply_config(self):
         geom = self._cfg.get("geometry")
@@ -1474,6 +1550,9 @@ class App(tk.Tk):
         self.sent_line_color = str(self._cfg.get("sent_line_color", self.sent_line_color))
         self.acked_line_color = str(self._cfg.get("acked_line_color", self.acked_line_color))
         self.show_sent_highlight = bool(self._cfg.get("show_sent_highlight", self.show_sent_highlight))
+        self.sync_timeout_s = float(self._cfg.get("sync_timeout_s", self.sync_timeout_s))
+        self.homing_sync_timeout_s = float(self._cfg.get("homing_sync_timeout_s", self.homing_sync_timeout_s))
+        self.system_sync_timeout_s = float(self._cfg.get("system_sync_timeout_s", self.system_sync_timeout_s))
         self._apply_heights_live()
         self.set_gcode_highlight_colors(self.sent_line_color, self.acked_line_color)
         self.set_show_sent_highlight(self.show_sent_highlight)
@@ -1493,6 +1572,9 @@ class App(tk.Tk):
         cfg["sent_line_color"] = str(self.sent_line_color)
         cfg["acked_line_color"] = str(self.acked_line_color)
         cfg["show_sent_highlight"] = bool(self.show_sent_highlight)
+        cfg["sync_timeout_s"] = float(self.sync_timeout_s)
+        cfg["homing_sync_timeout_s"] = float(self.homing_sync_timeout_s)
+        cfg["system_sync_timeout_s"] = float(self.system_sync_timeout_s)
         save_config(cfg)
         self._cfg = cfg
 
@@ -1521,6 +1603,19 @@ class App(tk.Tk):
             self.gcode_view.set_show_sent(self.show_sent_highlight)
         except Exception:
             pass
+        self._write_config()
+
+    def set_sync_timeouts(self, sync_timeout_s: float, homing_sync_timeout_s: float, system_sync_timeout_s: float):
+        self.sync_timeout_s = float(sync_timeout_s)
+        self.homing_sync_timeout_s = float(homing_sync_timeout_s)
+        self.system_sync_timeout_s = float(system_sync_timeout_s)
+        if self.worker:
+            try:
+                self.worker._sync_timeout_s = self.sync_timeout_s
+                self.worker._homing_sync_timeout_s = self.homing_sync_timeout_s
+                self.worker._system_sync_timeout_s = self.system_sync_timeout_s
+            except Exception:
+                pass
         self._write_config()
 
     def set_step_presets_xy(self, presets: list[str]):
@@ -1618,8 +1713,6 @@ class App(tk.Tk):
         self.tx_queue.put(("realtime", b))
 
     def emergency_stop(self):
-        if not messagebox.askyesno("Emergency Stop", "Send immediate stop (Ctrl-X) and cancel the job?"):
-            return
         self.cancel_job()
         self._log("[rt] Emergency Stop (Ctrl-X).")
 
@@ -1787,6 +1880,10 @@ class App(tk.Tk):
     def on_close(self):
         self._write_config()
         if self.worker:
+            try:
+                self.worker.running = False
+            except Exception:
+                pass
             self.tx_queue.put(("shutdown",))
         self.destroy()
 
@@ -1850,7 +1947,7 @@ class App(tk.Tk):
         self.btn_disconnect = ttk.Button(topbar, text="Disconnect", command=self.disconnect)
         self.btn_disconnect.grid(row=0, column=10, padx=(0, 12))
 
-        self.btn_settings = ttk.Button(topbar, text="Settings…", command=self.open_settings)
+        self.btn_settings = ttk.Button(topbar, text="Settings", command=self.open_settings)
         self.btn_settings.grid(row=0, column=11, padx=(0, 12))
 
         self.btn_upload = ttk.Button(topbar, text="NC File Load", command=self.load_file)
@@ -1977,9 +2074,9 @@ class App(tk.Tk):
         for c in range(6):
             wpos_row.grid_columnconfigure(c, weight=1, uniform="wpos")
 
-        self.btn_home_all = ttk.Button(wpos_row, text="Home All ($H)", style="Start.TButton", command=lambda: self.send_line("$H"))
+        self.btn_home_all = ttk.Button(wpos_row, text="Home All ($H)", style="Start.TButton", command=self.home_all)
         self.btn_unlock = ttk.Button(wpos_row, text="Unlock ($X)", style="Start.TButton", command=self.unlock)
-        self.btn_reset_wpos = ttk.Button(wpos_row, text="Reset WPOS", style="Hold.TButton", command=self.reset_wpos_to_mpos)
+        self.btn_reset_wpos = ttk.Button(wpos_row, text="Clear WPOS", style="Hold.TButton", command=self.clear_wpos)
         self.btn_set_wpos_x = ttk.Button(wpos_row, text="Set X", style="Hold.TButton", command=lambda: self.set_wpos_axis("X"))
         self.btn_set_wpos_y = ttk.Button(wpos_row, text="Set Y", style="Hold.TButton", command=lambda: self.set_wpos_axis("Y"))
         self.btn_set_wpos_z = ttk.Button(wpos_row, text="Set Z", style="Hold.TButton", command=lambda: self.set_wpos_axis("Z"))
@@ -2220,6 +2317,9 @@ class App(tk.Tk):
             use_planner_throttle=use_planner_throttle,
             planner_free_min=planner_free_min,
             cancel_unlock=cancel_unlock,
+            sync_timeout_s=self.sync_timeout_s,
+            homing_sync_timeout_s=self.homing_sync_timeout_s,
+            system_sync_timeout_s=self.system_sync_timeout_s,
             tx_queue=self.tx_queue,
             ui_queue=self.ui_queue
         )
@@ -2231,9 +2331,15 @@ class App(tk.Tk):
     def disconnect(self):
         if not self.worker:
             return
+        if not messagebox.askyesno("Confirm disconnect", "Disconnect from GRBL now?"):
+            return
         if getattr(self, "_disconnecting", False):
             return
         self._disconnecting = True
+        try:
+            self.worker.running = False
+        except Exception:
+            pass
         self.tx_queue.put(("shutdown",))
         self._log("Disconnect requested.")
         self._poll_disconnect_complete()
@@ -2320,6 +2426,8 @@ class App(tk.Tk):
 
     def soft_reset(self):
         if self.worker:
+            if not messagebox.askyesno("Confirm soft reset", "Send Ctrl-X (soft reset) now?"):
+                return
             self.active_mode_var.set("Active: -")
             self.progress["value"] = 0
             self.gcode_view.highlight_line(0)
@@ -2328,15 +2436,26 @@ class App(tk.Tk):
 
     def cancel_job(self):
         if self.worker:
+            if not messagebox.askyesno("Confirm cancel", "Cancel the current job?"):
+                return
             self.tx_queue.put(("cancel_job",))
             self.gcode_view.highlight_line(0)
             self._apply_mode("idle")
+
+    def home_all(self):
+        if not self.worker:
+            return
+        if not messagebox.askyesno("Confirm homing", "Home all axes ($H)?"):
+            return
+        self.send_line("$H")
 
     def unlock(self):
         self.send_line("$X")
 
     def reset_wpos_to_mpos(self):
         if not self.worker:
+            return
+        if not messagebox.askyesno("Confirm WPOS update", "Set WPOS to current MPOS for all axes?"):
             return
         if not self._last_mpos:
             messagebox.showerror("Position unknown", "No MPos data yet; wait for status and try again.")
@@ -2345,9 +2464,19 @@ class App(tk.Tk):
         self.send_line(f"G10 L2 P0 X{x:.3f} Y{y:.3f} Z{z:.3f}")
         self._log("[info] Set WCO to current MPos (WPos -> 0,0,0).")
 
+    def clear_wpos(self):
+        if not self.worker:
+            return
+        if not messagebox.askyesno("Confirm WPOS clear", "Set WPOS to 0 for all axes?"):
+            return
+        self.send_line("G10 L2 P0 X0 Y0 Z0")
+        self._log("[info] WPOS cleared (G10 L2 P0 X0 Y0 Z0).")
+
     def set_wpos_axis(self, axis: str):
         axis = axis.upper()
         if axis not in ("X", "Y", "Z"):
+            return
+        if not messagebox.askyesno("Confirm WPOS update", f"Set WPOS {axis}=0?"):
             return
         self.send_line(f"G10 L20 P0 {axis}0")
 
@@ -2415,7 +2544,7 @@ class App(tk.Tk):
 
     def _set_state_style(self, st: str | None):
         if st and st.upper().startswith("ALARM"):
-            self.machine_state_var.set(f"STATE: {st}  ⚠")
+            self.machine_state_var.set(f"STATE: {st}  ALARM")
             self.big_state_var.set("ALARM")
         else:
             self.machine_state_var.set(f"STATE: {st if st else '-'}")
