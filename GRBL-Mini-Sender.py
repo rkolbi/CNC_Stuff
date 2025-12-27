@@ -83,6 +83,11 @@ def clean_gcode_line(line: str) -> str:
     if ";" in s:
         s = s.split(";", 1)[0].strip()
 
+    if not s:
+        return ""
+
+    # Normalize for older GRBL variants: uppercase and remove all whitespace.
+    s = "".join(s.split()).upper()
     return s
 
 
@@ -407,7 +412,7 @@ class GCodeView(ttk.Frame):
             wrap="none",
             height=max(4, int(default_height_lines)),
             font=("Consolas", 11),
-            background="#14181d",
+            background="#202733",
             foreground="#d7dde5",
             insertbackground="#d7dde5",
             selectbackground="#2a3b55",
@@ -581,6 +586,11 @@ class GrblWorker(threading.Thread):
     def _read_available(self) -> str:
         try:
             data = self.ser.read(4096)
+        except serial.SerialException as e:
+            self.running = False
+            self.ui_queue.put(("error", f"Serial read failed: {e}"))
+            self.ui_queue.put(("log", "Emergency disconnect: serial read failed."))
+            return ""
         except Exception:
             return ""
         if not data:
@@ -750,21 +760,6 @@ class GrblWorker(threading.Thread):
             self.finish_job(f"Job stopped: {resp}")
 
     def _stream_step_buffered(self):
-        ok_count, fatal = self._process_incoming_lines()
-        if fatal:
-            try:
-                self.send_realtime(RT_HOLD)
-            except Exception:
-                pass
-            self.finish_job(f"Job stopped: {fatal}")
-            return
-
-        if ok_count:
-            self.job_ok += ok_count
-            self.ui_queue.put(("progress", self.job_ok, self.job_total))
-            nxt = min(self.job_ok + 1, self.job_total)
-            self.ui_queue.put(("job_line", nxt if self.job_ok < self.job_total else 0, self.job_total))
-
         while self.running and self.job_active and not self.job_paused:
             if not self._planner_can_send():
                 break
@@ -786,6 +781,7 @@ class GrblWorker(threading.Thread):
             ln = len(payload)
 
             if ln > self._buffer_total:
+                self.ui_queue.put(("log", f"[warn] Line exceeds RX buffer ({ln} > {self._buffer_total}); sending sync."))
                 self._job_fh.seek(pos)
                 raw2 = self._job_fh.readline()
                 line2 = raw2.strip()
@@ -910,7 +906,19 @@ class GrblWorker(threading.Thread):
                 except Exception:
                     pass
 
-            self._process_incoming_lines()
+            ok_count, fatal = self._process_incoming_lines()
+            if self.job_active and self.stream_mode == "buffered":
+                if fatal:
+                    try:
+                        self.send_realtime(RT_HOLD)
+                    except Exception:
+                        pass
+                    self.finish_job(f"Job stopped: {fatal}")
+                elif ok_count:
+                    self.job_ok += ok_count
+                    self.ui_queue.put(("progress", self.job_ok, self.job_total))
+                    nxt = min(self.job_ok + 1, self.job_total)
+                    self.ui_queue.put(("job_line", nxt if self.job_ok < self.job_total else 0, self.job_total))
             time.sleep(0.002)
 
         self.close()
@@ -1430,7 +1438,6 @@ class App(tk.Tk):
     def emergency_stop(self):
         if not messagebox.askyesno("Emergency Stop", "Send immediate stop (Ctrl-X) and cancel the job?"):
             return
-        self.send_realtime(CTRL_X)
         self.cancel_job()
         self._log("[rt] Emergency Stop (Ctrl-X).")
 
@@ -1725,7 +1732,7 @@ class App(tk.Tk):
             console_frame,
             height=max(4, int(self.console_height_lines)),
             font=("Consolas", 10),
-            background="#101418",
+            background="#202733",
             foreground="#cfd8e3",
             insertbackground="#cfd8e3",
             relief="flat",
@@ -2030,9 +2037,19 @@ class App(tk.Tk):
     def disconnect(self):
         if not self.worker:
             return
+        if getattr(self, "_disconnecting", False):
+            return
+        self._disconnecting = True
         self.tx_queue.put(("shutdown",))
-        self.worker = None
         self._log("Disconnect requested.")
+        self._poll_disconnect_complete()
+
+    def _poll_disconnect_complete(self):
+        if self.worker and self.worker.is_alive():
+            self.after(100, self._poll_disconnect_complete)
+            return
+        self.worker = None
+        self._disconnecting = False
         self.last_grbl_state = "-"
         self.device_info_var.set("Device: -")
         self.grbl_id_var.set("GRBL: -")
@@ -2125,7 +2142,7 @@ class App(tk.Tk):
         self.send_line("$X")
 
     def reset_wpos_to_mpos(self):
-        self.send_line("G10 L20 P0 X0 Y0 Z0")
+        self.send_line("G10 L2 P0 X0 Y0 Z0")
 
     def set_wpos_axis(self, axis: str):
         axis = axis.upper()
