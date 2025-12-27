@@ -267,7 +267,19 @@ class ScrollableRoot(ttk.Frame):
         self.inner.bind("<Configure>", self._on_inner_configure)
         self.canvas.bind("<Configure>", self._on_canvas_configure)
 
-        self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.canvas.bind("<Enter>", self._bind_mousewheel)
+        self.canvas.bind("<Leave>", self._unbind_mousewheel)
+        self._mousewheel_bound = False
+
+    def _bind_mousewheel(self, _):
+        if not self._mousewheel_bound:
+            self.canvas.bind_all("<MouseWheel>", self._on_mousewheel)
+            self._mousewheel_bound = True
+
+    def _unbind_mousewheel(self, _):
+        if self._mousewheel_bound:
+            self.canvas.unbind_all("<MouseWheel>")
+            self._mousewheel_bound = False
 
     def _on_inner_configure(self, _):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -456,7 +468,7 @@ class GCodeView(ttk.Frame):
 
 class GrblWorker(threading.Thread):
     def __init__(self, port: str, baud: int, rx_buffer_total: int, use_bf_autosize: bool,
-                 use_planner_throttle: bool,
+                 use_planner_throttle: bool, planner_free_min: int,
                  cancel_unlock: bool,
                  tx_queue: queue.Queue, ui_queue: queue.Queue):
         super().__init__(daemon=True)
@@ -484,10 +496,13 @@ class GrblWorker(threading.Thread):
         self._buffer_total = max(32, min(int(rx_buffer_total), 4096))
         self._use_bf_autosize = bool(use_bf_autosize)
         self._use_planner_throttle = bool(use_planner_throttle)
+        self._planner_free_min = clamp(int(planner_free_min), 1, 4)
         self._cancel_unlock = bool(cancel_unlock)
 
         self._last_planner_free = None
         self._last_rx_free = None
+        self._bf_seen = False
+        self._bf_warned = False
 
         self._rx_buf = ""
         self._last_state = None
@@ -586,6 +601,7 @@ class GrblWorker(threading.Thread):
         if not bf:
             return
         planner_free, rx_free = bf
+        self._bf_seen = True
         self._last_planner_free = planner_free
         self._last_rx_free = rx_free
 
@@ -593,6 +609,18 @@ class GrblWorker(threading.Thread):
             if rx_free > self._buffer_total:
                 self._buffer_total = rx_free
                 self.ui_queue.put(("log", f"[info] Learned larger RX buffer total via Bf: {self._buffer_total}"))
+
+    def _planner_can_send(self) -> bool:
+        if not self._use_planner_throttle:
+            return True
+        if not self._bf_seen:
+            if not self._bf_warned:
+                self._bf_warned = True
+                self.ui_queue.put(("log", "[info] Planner throttle disabled (no Bf: in status)."))
+            return True
+        if self._last_planner_free is None:
+            return True
+        return self._last_planner_free > self._planner_free_min
 
     def _process_incoming_lines(self):
         ok_count = 0
@@ -738,6 +766,8 @@ class GrblWorker(threading.Thread):
             self.ui_queue.put(("job_line", nxt if self.job_ok < self.job_total else 0, self.job_total))
 
         while self.running and self.job_active and not self.job_paused:
+            if not self._planner_can_send():
+                break
             if self._inflight_bytes >= (self._buffer_total - 2):
                 break
 
@@ -899,7 +929,8 @@ class SettingsWindow(tk.Toplevel):
         self.app = app
         self.title("Settings")
         self.resizable(False, False)
-        self.configure(background="#1b2128")
+        settings_bg = "#202733"
+        self.configure(background=settings_bg)
 
         self.transient(app)
         self.grab_set()
@@ -911,7 +942,10 @@ class SettingsWindow(tk.Toplevel):
         except Exception:
             pass
 
-        outer = ttk.Frame(self)
+        style = ttk.Style(self)
+        style.configure("Settings.TFrame", background=settings_bg)
+
+        outer = ttk.Frame(self, style="Settings.TFrame")
         outer.grid(row=0, column=0, sticky="nsew", padx=12, pady=12)
 
         self.port_map = {}
@@ -923,6 +957,7 @@ class SettingsWindow(tk.Toplevel):
         self.stream_mode_var = tk.StringVar(value=self.app._cfg.get("stream_mode", "sync"))
         if self.stream_mode_var.get() not in ("sync", "buffered"):
             self.stream_mode_var.set("sync")
+        self.planner_free_min_var = tk.IntVar(value=int(self.app._cfg.get("planner_free_min", 2)))
 
         self.jog_feed_x = tk.DoubleVar(value=float(self.app._cfg.get("jog_feed_x", 50.0)))
         self.jog_feed_y = tk.DoubleVar(value=float(self.app._cfg.get("jog_feed_y", 50.0)))
@@ -959,6 +994,12 @@ class SettingsWindow(tk.Toplevel):
         ttk.Combobox(row, state="readonly", textvariable=self.stream_mode_var, values=["sync", "buffered"], width=14)\
             .grid(row=0, column=1, sticky="w", padx=(10, 0))
         ttk.Label(row, text="(sync = safest, buffered = faster)").grid(row=0, column=2, sticky="w", padx=(10, 0))
+
+        row2 = ttk.Frame(stream)
+        row2.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+        ttk.Label(row2, text="Planner min free blocks (buffered)").grid(row=0, column=0, sticky="w")
+        ttk.Entry(row2, textvariable=self.planner_free_min_var, width=6).grid(row=0, column=1, sticky="w", padx=(10, 0))
+        ttk.Label(row2, text="(1-4)").grid(row=0, column=2, sticky="w", padx=(10, 0))
 
         job = ttk.LabelFrame(outer, text="Job Safety")
         job.grid(row=2, column=0, sticky="ew", pady=(10, 0))
@@ -1039,6 +1080,15 @@ class SettingsWindow(tk.Toplevel):
             sm = "sync"
 
         try:
+            planner_min = int(self.planner_free_min_var.get())
+        except Exception:
+            messagebox.showerror("Invalid planner buffer", "Planner min free blocks must be an integer.")
+            return
+        if planner_min < 1 or planner_min > 4:
+            messagebox.showerror("Invalid planner buffer", "Planner min free blocks must be between 1 and 4.")
+            return
+
+        try:
             jx = float(self.jog_feed_x.get())
             jy = float(self.jog_feed_y.get())
             jz = float(self.jog_feed_z.get())
@@ -1084,6 +1134,7 @@ class SettingsWindow(tk.Toplevel):
         self.app._cfg["port_device"] = port_device
         self.app._cfg["baud"] = baud
         self.app._cfg["stream_mode"] = sm
+        self.app._cfg["planner_free_min"] = planner_min
         self.app._cfg["jog_feed_x"] = jx
         self.app._cfg["jog_feed_y"] = jy
         self.app._cfg["jog_feed_z"] = jz
@@ -1174,6 +1225,7 @@ class App(tk.Tk):
         self.feed_override_label_var = tk.StringVar(value="100%")
         self.spindle_override_label_var = tk.StringVar(value="100%")
         self.status_banner_var = tk.StringVar(value="Disconnected")
+        self.job_line_var = tk.StringVar(value="Line: -")
         self.machine_state_var = tk.StringVar(value="STATE: -")
         self.feed_var = tk.StringVar(value="FEED: -")
         self.raw_status_var = tk.StringVar(value="")
@@ -1204,6 +1256,18 @@ class App(tk.Tk):
         style.map("PresetActive.TButton",
                   background=[("active", "#2f6f52"), ("!active", "#2f6f52")],
                   foreground=[("active", "#eafff3"), ("!active", "#eafff3")])
+        style.configure("Start.TButton", padding=(14, 10), background="#16a34a", foreground="#f0fdf4")
+        style.map("Start.TButton",
+                  background=[("active", "#15803d"), ("!active", "#16a34a")],
+                  foreground=[("active", "#f0fdf4"), ("!active", "#f0fdf4")])
+        style.configure("Hold.TButton", padding=(14, 10), background="#d97706", foreground="#fffbeb")
+        style.map("Hold.TButton",
+                  background=[("active", "#b45309"), ("!active", "#d97706")],
+                  foreground=[("active", "#fffbeb"), ("!active", "#fffbeb")])
+        style.configure("Stop.TButton", padding=(14, 10), background="#b91c1c", foreground="#fef2f2")
+        style.map("Stop.TButton",
+                  background=[("active", "#991b1b"), ("!active", "#b91c1c")],
+                  foreground=[("active", "#fef2f2"), ("!active", "#fef2f2")])
         style.configure("Danger.TButton", padding=(12, 10), background="#b91c1c", foreground="#fef2f2")
         style.map("Danger.TButton",
                   background=[("active", "#991b1b"), ("!active", "#b91c1c")],
@@ -1575,39 +1639,39 @@ class App(tk.Tk):
         topbar.grid_columnconfigure(99, weight=1)
 
         self.btn_estop = ttk.Button(topbar, text="E-STOP (Ctrl-X)", style="Danger.TButton", command=self.emergency_stop)
-        self.btn_soft_reset = ttk.Button(topbar, text="Soft Reset", command=self.soft_reset)
-        self.btn_start  = ttk.Button(topbar, text="Start",  command=self.start_job)
-        self.btn_stop   = ttk.Button(topbar, text="Stop",   command=self.stop_gentle)
-        self.btn_pause  = ttk.Button(topbar, text="Pause",  command=self.pause_job)
-        self.btn_cancel = ttk.Button(topbar, text="Cancel", command=self.cancel_job)
-        self.btn_resume = ttk.Button(topbar, text="Resume", command=self.resume_job)
-        self.btn_reset  = ttk.Button(topbar, text="Reset",  command=self.soft_reset)
+        self.btn_soft_reset = ttk.Button(topbar, text="Soft Reset", style="Stop.TButton", command=self.soft_reset)
+        self.btn_start  = ttk.Button(topbar, text="Start",  style="Start.TButton", command=self.start_job)
+        self.btn_hold   = ttk.Button(topbar, text="Hold",   style="Hold.TButton", command=self.stop_gentle)
+        self.btn_pause  = ttk.Button(topbar, text="Pause",  style="Hold.TButton", command=self.pause_job)
+        self.btn_resume = ttk.Button(topbar, text="Resume", style="Start.TButton", command=self.resume_job)
+        self.btn_cancel = ttk.Button(topbar, text="Cancel", style="Stop.TButton", command=self.cancel_job)
 
         self.btn_estop.grid(row=0, column=0, padx=(0, 8))
-        self.btn_soft_reset.grid(row=0, column=1, padx=(0, 16))
-        self.btn_start.grid(row=0, column=2, padx=(0, 8))
-        self.btn_stop.grid(row=0, column=3, padx=(0, 8))
+        self.btn_soft_reset.grid(row=0, column=1, padx=(0, 12))
+        ttk.Separator(topbar, orient="vertical").grid(row=0, column=2, sticky="ns", padx=(0, 12))
+        self.btn_start.grid(row=0, column=3, padx=(0, 8))
         self.btn_pause.grid(row=0, column=4, padx=(0, 8))
-        self.btn_cancel.grid(row=0, column=5, padx=(0, 8))
-        self.btn_resume.grid(row=0, column=6, padx=(0, 8))
-        self.btn_reset.grid(row=0, column=7, padx=(0, 16))
+        self.btn_resume.grid(row=0, column=5, padx=(0, 8))
+        self.btn_hold.grid(row=0, column=6, padx=(0, 8))
+        self.btn_cancel.grid(row=0, column=7, padx=(0, 12))
+        ttk.Separator(topbar, orient="vertical").grid(row=0, column=8, sticky="ns", padx=(0, 12))
 
         self.btn_connect = ttk.Button(topbar, text="Connect", command=self.connect)
-        self.btn_connect.grid(row=0, column=8, padx=(0, 8))
+        self.btn_connect.grid(row=0, column=9, padx=(0, 8))
         self.btn_disconnect = ttk.Button(topbar, text="Disconnect", command=self.disconnect)
-        self.btn_disconnect.grid(row=0, column=9, padx=(0, 12))
+        self.btn_disconnect.grid(row=0, column=10, padx=(0, 12))
 
         self.btn_settings = ttk.Button(topbar, text="Settings…", command=self.open_settings)
-        self.btn_settings.grid(row=0, column=10, padx=(0, 12))
+        self.btn_settings.grid(row=0, column=11, padx=(0, 12))
 
         self.btn_upload = ttk.Button(topbar, text="NC File Load", command=self.load_file)
-        self.btn_upload.grid(row=0, column=11, padx=(0, 16))
+        self.btn_upload.grid(row=0, column=12, padx=(0, 16))
 
         self.device_info_var = tk.StringVar(value="Device: -")
-        ttk.Label(topbar, textvariable=self.device_info_var).grid(row=0, column=12, sticky="w", padx=(0, 12))
+        ttk.Label(topbar, textvariable=self.device_info_var).grid(row=0, column=13, sticky="w", padx=(0, 12))
 
         self.grbl_id_var = tk.StringVar(value="GRBL: -")
-        ttk.Label(topbar, textvariable=self.grbl_id_var).grid(row=0, column=13, sticky="w", padx=(0, 12))
+        ttk.Label(topbar, textvariable=self.grbl_id_var).grid(row=0, column=14, sticky="w", padx=(0, 12))
 
         self.job_label_var = tk.StringVar(value="No job loaded")
         ttk.Label(topbar, textvariable=self.job_label_var).grid(row=0, column=99, sticky="e")
@@ -1634,11 +1698,14 @@ class App(tk.Tk):
         self.job_panel = ttk.LabelFrame(job_header, text="Job")
         self.job_panel.grid(row=0, column=0, sticky="ew")
         self.job_panel.grid_columnconfigure(0, weight=1)
+        self.job_panel.grid_columnconfigure(1, weight=0)
 
         self.active_mode_var = tk.StringVar(value="Active: -")
         ttk.Label(self.job_panel, textvariable=self.active_mode_var, anchor="center").grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 6))
         self.progress = ttk.Progressbar(self.job_panel, mode="determinate")
         self.progress.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(self.job_panel, textvariable=self.job_line_var, width=12, anchor="e")\
+            .grid(row=1, column=1, sticky="e", padx=(0, 8), pady=(0, 8))
 
         # --- Main area: vertical split (G-code / Console) ---
         self.left_pane = ttk.PanedWindow(main, orient="vertical")
@@ -1702,6 +1769,27 @@ class App(tk.Tk):
         self.dro_work = DroPanel(dro_row, "Work (WPos)")
         self.dro_work.grid(row=0, column=1, sticky="ew", padx=(8, 0))
 
+        jog_btn_width = 28
+
+        wpos_row = ttk.Frame(dro_row)
+        wpos_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        for c in range(6):
+            wpos_row.grid_columnconfigure(c, weight=1, uniform="wpos")
+
+        self.btn_home_all = ttk.Button(wpos_row, text="Home All ($H)", style="Start.TButton", command=lambda: self.send_line("$H"))
+        self.btn_unlock = ttk.Button(wpos_row, text="Unlock ($X)", style="Start.TButton", command=self.unlock)
+        self.btn_reset_wpos = ttk.Button(wpos_row, text="Reset WPOS", style="Hold.TButton", command=self.reset_wpos_to_mpos)
+        self.btn_set_wpos_x = ttk.Button(wpos_row, text="Set X", style="Hold.TButton", command=lambda: self.set_wpos_axis("X"))
+        self.btn_set_wpos_y = ttk.Button(wpos_row, text="Set Y", style="Hold.TButton", command=lambda: self.set_wpos_axis("Y"))
+        self.btn_set_wpos_z = ttk.Button(wpos_row, text="Set Z", style="Hold.TButton", command=lambda: self.set_wpos_axis("Z"))
+
+        self.btn_home_all.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.btn_unlock.grid(row=0, column=1, sticky="ew", padx=6)
+        self.btn_reset_wpos.grid(row=0, column=2, sticky="ew", padx=6)
+        self.btn_set_wpos_x.grid(row=0, column=3, sticky="ew", padx=6)
+        self.btn_set_wpos_y.grid(row=0, column=4, sticky="ew", padx=6)
+        self.btn_set_wpos_z.grid(row=0, column=5, sticky="ew", padx=(6, 0))
+
         overrides = ttk.LabelFrame(sidebar, text="Overrides")
         overrides.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         overrides.grid_columnconfigure(1, weight=1)
@@ -1754,6 +1842,7 @@ class App(tk.Tk):
 
         self.jog_step_xy = tk.DoubleVar(value=0.1)
         self.jog_step_z = tk.DoubleVar(value=0.1)
+
         self.step_preset_row_xy = ttk.Frame(jog)
         self.step_preset_row_xy.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
         self._build_step_preset_buttons()
@@ -1771,6 +1860,8 @@ class App(tk.Tk):
         ttk.Label(pad, text="XYZ").grid(row=1, column=1, padx=6, pady=6)
         self.btn_jog_xp.grid(row=1, column=2, padx=6, pady=6)
         self.btn_jog_ym.grid(row=2, column=1, padx=6, pady=6)
+        self.btn_jog_cancel = ttk.Button(pad, text="Jog Cancel", style="Hold.TButton", command=self.jog_cancel)
+        self.btn_jog_cancel.grid(row=0, column=3, rowspan=3, sticky="ns", padx=(12, 0), pady=6)
 
         self.step_preset_row_z = ttk.Frame(jog)
         self.step_preset_row_z.grid(row=3, column=0, padx=8, pady=(0, 6))
@@ -1786,22 +1877,8 @@ class App(tk.Tk):
         self.btn_jog_zm.grid(row=0, column=0, padx=(0, 6))
         self.btn_jog_zp.grid(row=0, column=1, padx=(6, 0))
 
-        self.btn_jog_cancel = ttk.Button(jog, text="Jog Cancel", command=self.jog_cancel)
-        self.btn_jog_cancel.grid(row=5, column=0, sticky="ew", padx=8, pady=(0, 8))
-
-        ops_row = ttk.Frame(jog)
-        ops_row.grid(row=6, column=0, padx=8, pady=(0, 10))
-        ops_row.grid_columnconfigure(0, weight=0)
-        ops_row.grid_columnconfigure(1, weight=0)
-
-        jog_btn_width = 28
-        self.btn_home_all = ttk.Button(ops_row, text="Home All ($H)", width=jog_btn_width, command=lambda: self.send_line("$H"))
-        self.btn_unlock = ttk.Button(ops_row, text="Unlock ($X)", width=jog_btn_width, command=self.unlock)
-        self.btn_home_all.grid(row=0, column=0, padx=(0, 6))
-        self.btn_unlock.grid(row=0, column=1, padx=(6, 0))
-
         mgrid = ttk.Frame(jog)
-        mgrid.grid(row=7, column=0, padx=8, pady=(0, 10))
+        mgrid.grid(row=6, column=0, padx=8, pady=(0, 10))
         for c in range(2):
             mgrid.grid_columnconfigure(c, weight=0, uniform="jogcols")
 
@@ -1879,9 +1956,8 @@ class App(tk.Tk):
 
         set_state(self.btn_start, connected and idle and flags["is_idle"] and self.current_job_total_lines > 0)
         set_state(self.btn_pause, connected and running)
-        set_state(self.btn_stop, connected and running)
+        set_state(self.btn_hold, connected and running)
         set_state(self.btn_resume, connected and (paused or hold))
-        set_state(self.btn_reset, connected)
         set_state(self.btn_cancel, connected and (running or paused or hold))
 
         can_jog = connected and idle and flags["is_idle"] and bool(self.enable_jog_var.get())
@@ -1890,8 +1966,10 @@ class App(tk.Tk):
         set_state(self.btn_jog_cancel, connected)
 
         set_state(self.btn_home_all, connected and idle and (flags["is_idle"] or flags["is_alarm"]))
-        can_unlock = connected and idle and (flags["is_alarm"] or flags["is_door"])
+        can_unlock = connected and (flags["is_alarm"] or flags["is_door"])
         set_state(self.btn_unlock, can_unlock)
+        for b in (self.btn_reset_wpos, self.btn_set_wpos_x, self.btn_set_wpos_y, self.btn_set_wpos_z):
+            set_state(b, connected and idle and flags["is_idle"])
 
         can_macro = connected and idle and flags["is_idle"]
         for b in self.macro_buttons:
@@ -1909,6 +1987,7 @@ class App(tk.Tk):
             self.big_state_var.set("DISCONNECTED")
             self.indicators.set_all_off()
             self._set_status_banner("Disconnected", "info")
+            self.job_line_var.set("Line: -")
 
         if hasattr(self, "feed_override_scale"):
             set_state(self.feed_override_scale, connected)
@@ -1929,6 +2008,7 @@ class App(tk.Tk):
         rx_total = int(self._cfg.get("rx_buffer_bytes", DEFAULT_GRBL_RX_BUFFER_BYTES))
         use_bf = bool(self._cfg.get("use_bf_autosize", True))
         use_planner_throttle = bool(self._cfg.get("use_planner_throttle", True))
+        planner_free_min = int(self._cfg.get("planner_free_min", 2))
         cancel_unlock = bool(self._cfg.get("cancel_unlock", False))
 
         self.worker = GrblWorker(
@@ -1937,6 +2017,7 @@ class App(tk.Tk):
             rx_buffer_total=rx_total,
             use_bf_autosize=use_bf,
             use_planner_throttle=use_planner_throttle,
+            planner_free_min=planner_free_min,
             cancel_unlock=cancel_unlock,
             tx_queue=self.tx_queue,
             ui_queue=self.ui_queue
@@ -2043,6 +2124,15 @@ class App(tk.Tk):
     def unlock(self):
         self.send_line("$X")
 
+    def reset_wpos_to_mpos(self):
+        self.send_line("G10 L20 P0 X0 Y0 Z0")
+
+    def set_wpos_axis(self, axis: str):
+        axis = axis.upper()
+        if axis not in ("X", "Y", "Z"):
+            return
+        self.send_line(f"G10 L20 P0 {axis}0")
+
     def jog_cancel(self):
         if self.worker:
             self.tx_queue.put(("realtime", RT_JOG_CANCEL))
@@ -2130,6 +2220,12 @@ class App(tk.Tk):
                 elif kind == "job_line":
                     line_no, total = msg[1], msg[2]
                     self.gcode_view.highlight_line(int(line_no) if line_no else 0)
+                    if line_no and total:
+                        self.job_line_var.set(f"Line: {line_no}/{total}")
+                    elif total:
+                        self.job_line_var.set(f"Line: 0/{total}")
+                    else:
+                        self.job_line_var.set("Line: -")
                 elif kind == "active_stream_mode":
                     mode = msg[1]
                     label = "-" if mode == "-" else ("sync (safe)" if mode == "sync" else "buffered (fast)")
@@ -2176,6 +2272,13 @@ class App(tk.Tk):
     def _log(self, text: str):
         self.console.insert("end", text + "\n")
         self.console.see("end")
+        max_lines = 2000
+        try:
+            line_count = int(self.console.index("end-1c").split(".", 1)[0])
+        except Exception:
+            return
+        if line_count > max_lines:
+            self.console.delete("1.0", f"{line_count - max_lines + 1}.0")
 
 
 if __name__ == "__main__":
