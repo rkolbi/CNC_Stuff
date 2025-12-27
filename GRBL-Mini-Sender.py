@@ -13,6 +13,35 @@ import collections
 
 APP_NAME = "GRBL Mini Sender"
 
+THEME = {
+    "bg": "#1e1e1e",
+    "card": "#242424",
+    "card_edge": "#2c2c2c",
+    "field": "#1a1a1a",
+    "text": "#f7f6ff",
+    "muted": "#b8b8b8",
+    "accent": "#3B82F6",
+    "accent_dark": "#2563EB",
+    "btn_bg": "#2a2a2a",
+    "btn_hover": "#343434",
+    "btn_primary": "#16a249",
+    "btn_primary_hover": "#139040",
+    "btn_warn": "#e3940f",
+    "btn_warn_hover": "#cb820d",
+    "danger": "#e9590c",
+    "danger_dark": "#cc4f0a",
+    "stop": "#c94d0a",
+    "stop_dark": "#b44509",
+    "ok": "#16a249",
+    "jog_x": "#e9590c",
+    "jog_x_hover": "#cc4f0a",
+    "jog_y": "#16a249",
+    "jog_y_hover": "#139040",
+    "jog_z": "#3B82F6",
+    "jog_z_hover": "#2563EB",
+    "jog_fg": "#f7f6ff"
+}
+
 def ui_font_label(size: int, weight: str = "normal") -> tuple[str, int] | tuple[str, int, str]:
     family = "Segoe UI" if os.name == "nt" else "DejaVu Sans"
     return (family, int(size), weight) if weight != "normal" else (family, int(size))
@@ -272,9 +301,11 @@ class ScrollableRoot(ttk.Frame):
     Optional wrapper to make the whole window scrollable.
     Applies at launch; changing requires restart (to keep state/simple/reliable).
     """
-    def __init__(self, parent, bg="#1b2128"):
+    def __init__(self, parent, bg: str | None = None):
         super().__init__(parent)
 
+        if bg is None:
+            bg = THEME["bg"]
         self.canvas = tk.Canvas(self, highlightthickness=0, bd=0, bg=bg)
         self.vsb = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self.vsb.set)
@@ -332,7 +363,7 @@ class Tooltip:
         self._tip = tk.Toplevel(self.widget)
         self._tip.wm_overrideredirect(True)
         self._tip.wm_geometry(f"+{x}+{y}")
-        lbl = tk.Label(self._tip, text=self.text, bg="#111827", fg="#e5e7eb",
+        lbl = tk.Label(self._tip, text=self.text, bg=THEME["card"], fg=THEME["text"],
                        padx=8, pady=4, relief="solid", borderwidth=1, justify="left")
         lbl.pack()
 
@@ -342,27 +373,31 @@ class Tooltip:
             self._tip = None
 
 
-class DroPanel(ttk.LabelFrame):
+class DroPanel(ttk.Frame):
     def __init__(self, parent, title: str):
-        super().__init__(parent, text=title)
+        super().__init__(parent, style="CardBody.TFrame")
         self.var_x = tk.StringVar(value="-")
         self.var_y = tk.StringVar(value="-")
         self.var_z = tk.StringVar(value="-")
 
         font_label = ui_font_label(9)
-        font_value = ui_font_mono(18)
+        mono_family = "Courier New" if os.name == "nt" else "DejaVu Sans Mono"
+        font_value = (mono_family, 20, "bold")
 
-        grid = ttk.Frame(self)
-        grid.pack(padx=10, pady=10, fill="x")
+        ttk.Label(self, text=title, style="CardTitle.TLabel").grid(row=0, column=0, sticky="w", padx=10, pady=(8, 0))
 
-        ttk.Label(grid, text="X", font=font_label).grid(row=0, column=0, sticky="w", padx=(0, 10))
-        ttk.Label(grid, textvariable=self.var_x, font=font_value).grid(row=0, column=1, sticky="w")
+        grid = ttk.Frame(self, style="CardBody.TFrame")
+        grid.grid(row=1, column=0, sticky="ew", padx=10, pady=(6, 10))
+        self.grid_columnconfigure(0, weight=1)
 
-        ttk.Label(grid, text="Y", font=font_label).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
-        ttk.Label(grid, textvariable=self.var_y, font=font_value).grid(row=1, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(grid, text="X", font=font_label, style="Card.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 10))
+        ttk.Label(grid, textvariable=self.var_x, font=font_value, style="Card.TLabel").grid(row=0, column=1, sticky="w")
 
-        ttk.Label(grid, text="Z", font=font_label).grid(row=2, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
-        ttk.Label(grid, textvariable=self.var_z, font=font_value).grid(row=2, column=1, sticky="w", pady=(8, 0))
+        ttk.Label(grid, text="Y", font=font_label, style="Card.TLabel").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
+        ttk.Label(grid, textvariable=self.var_y, font=font_value, style="Card.TLabel").grid(row=1, column=1, sticky="w", pady=(8, 0))
+
+        ttk.Label(grid, text="Z", font=font_label, style="Card.TLabel").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=(8, 0))
+        ttk.Label(grid, textvariable=self.var_z, font=font_value, style="Card.TLabel").grid(row=2, column=1, sticky="w", pady=(8, 0))
 
     def set_xyz(self, v: tuple[float, float, float] | None):
         if v is None:
@@ -374,37 +409,39 @@ class DroPanel(ttk.LabelFrame):
 
 
 class LedIndicator(ttk.Frame):
-    def __init__(self, parent, label: str, size: int = 10):
+    def __init__(self, parent, label: str, size: int = 10, bg: str | None = None):
         super().__init__(parent)
-        self.canvas = tk.Canvas(self, width=size, height=size, highlightthickness=0, bg="#1b2128", bd=0)
+        if bg is None:
+            bg = THEME["card"]
+        self.canvas = tk.Canvas(self, width=size, height=size, highlightthickness=0, bg=bg, bd=0)
         self.canvas.grid(row=0, column=0, padx=(0, 8), pady=2, sticky="w")
-        self._oval = self.canvas.create_oval(1, 1, size - 1, size - 1, outline="#3a444f", fill="#222a33")
-        self.lbl = ttk.Label(self, text=label)
+        self._oval = self.canvas.create_oval(1, 1, size - 1, size - 1, outline="#3a444f", fill=THEME["field"])
+        self.lbl = ttk.Label(self, text=label, style="Card.TLabel")
         self.lbl.grid(row=0, column=1, sticky="w")
 
     def set_on(self, on: bool):
         if on:
-            self.canvas.itemconfigure(self._oval, fill="#22c55e", outline="#16a34a")
+            self.canvas.itemconfigure(self._oval, fill=THEME["ok"], outline="#16a34a")
         else:
-            self.canvas.itemconfigure(self._oval, fill="#222a33", outline="#3a444f")
+            self.canvas.itemconfigure(self._oval, fill=THEME["field"], outline="#3a444f")
 
 
-class IndicatorColumn(ttk.LabelFrame):
+class IndicatorColumn(ttk.Frame):
     def __init__(self, parent):
-        super().__init__(parent, text="Indicators")
-        wrap = ttk.Frame(self)
-        wrap.pack(fill="x", padx=10, pady=10)
+        super().__init__(parent, style="CardBody.TFrame")
+        wrap = ttk.Frame(self, style="CardBody.TFrame")
+        wrap.pack(fill="x")
 
-        ttk.Label(wrap, text="Inputs", font=ui_font_label(9, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(wrap, text="Inputs", font=ui_font_label(9, "bold"), style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 6))
 
-        self.led_x = LedIndicator(wrap, "X Limit")
-        self.led_y = LedIndicator(wrap, "Y Limit")
-        self.led_z = LedIndicator(wrap, "Z Limit")
-        self.led_p = LedIndicator(wrap, "Probe")
-        self.led_d = LedIndicator(wrap, "Door")
-        self.led_h = LedIndicator(wrap, "Hold")
-        self.led_r = LedIndicator(wrap, "Reset")
-        self.led_s = LedIndicator(wrap, "Cycle Start")
+        self.led_x = LedIndicator(wrap, "X Limit", bg=THEME["card"])
+        self.led_y = LedIndicator(wrap, "Y Limit", bg=THEME["card"])
+        self.led_z = LedIndicator(wrap, "Z Limit", bg=THEME["card"])
+        self.led_p = LedIndicator(wrap, "Probe", bg=THEME["card"])
+        self.led_d = LedIndicator(wrap, "Door", bg=THEME["card"])
+        self.led_h = LedIndicator(wrap, "Hold", bg=THEME["card"])
+        self.led_r = LedIndicator(wrap, "Reset", bg=THEME["card"])
+        self.led_s = LedIndicator(wrap, "Cycle Start", bg=THEME["card"])
 
         leds_inputs = [self.led_x, self.led_y, self.led_z, self.led_p, self.led_d, self.led_h, self.led_r, self.led_s]
         for i, w in enumerate(leds_inputs, start=1):
@@ -412,11 +449,11 @@ class IndicatorColumn(ttk.LabelFrame):
 
         ttk.Separator(wrap, orient="horizontal").grid(row=9, column=0, sticky="ew", pady=10)
 
-        ttk.Label(wrap, text="Accessories", font=ui_font_label(9, "bold")).grid(row=10, column=0, sticky="w", pady=(0, 6))
+        ttk.Label(wrap, text="Accessories", font=ui_font_label(9, "bold"), style="Card.TLabel").grid(row=10, column=0, sticky="w", pady=(0, 6))
 
-        self.led_as = LedIndicator(wrap, "Spindle")
-        self.led_af = LedIndicator(wrap, "Flood")
-        self.led_am = LedIndicator(wrap, "Mist")
+        self.led_as = LedIndicator(wrap, "Spindle", bg=THEME["card"])
+        self.led_af = LedIndicator(wrap, "Flood", bg=THEME["card"])
+        self.led_am = LedIndicator(wrap, "Mist", bg=THEME["card"])
 
         self.led_as.grid(row=11, column=0, sticky="w")
         self.led_af.grid(row=12, column=0, sticky="w")
@@ -457,10 +494,10 @@ class GCodeView(ttk.Frame):
             wrap="none",
             height=max(4, int(default_height_lines)),
             font=ui_font_mono(11),
-            background="#202733",
-            foreground="#d7dde5",
-            insertbackground="#d7dde5",
-            selectbackground="#2a3b55",
+            background=THEME["field"],
+            foreground=THEME["text"],
+            insertbackground=THEME["text"],
+            selectbackground="#2f3747",
             selectforeground="#ffffff",
             relief="flat",
             borderwidth=0
@@ -476,9 +513,9 @@ class GCodeView(ttk.Frame):
         self.grid_rowconfigure(0, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        self.text.tag_configure("lineno", foreground="#6b7280")
+        self.text.tag_configure("lineno", foreground=THEME["muted"])
         self.text.tag_configure("current", background=ack_color, foreground="#eafff3")
-        self.text.tag_configure("sent", background=sent_color, foreground="#d7dde5")
+        self.text.tag_configure("sent", background=sent_color, foreground=THEME["text"])
         self._line_count = 0
         self._show_line_numbers = True
         self._show_sent = bool(show_sent)
@@ -1039,7 +1076,7 @@ class SettingsWindow(tk.Toplevel):
         self.app = app
         self.title("Settings")
         self.resizable(False, False)
-        settings_bg = "#202733"
+        settings_bg = THEME["bg"]
         self.configure(background=settings_bg)
 
         self.transient(app)
@@ -1494,34 +1531,79 @@ class App(tk.Tk):
     def _build_styles(self):
         style = ttk.Style(self)
         style.theme_use("clam")
-        style.configure("TFrame", background="#1b2128")
-        style.configure("TLabelframe", background="#1b2128", foreground="#d7dde5")
-        style.configure("TLabelframe.Label", background="#1b2128", foreground="#d7dde5")
-        style.configure("TLabel", background="#1b2128", foreground="#d7dde5")
+        style.configure("TFrame", background=THEME["bg"])
+        style.configure("TLabel", background=THEME["card"], foreground=THEME["text"])
+        style.configure("Topbar.TFrame", background=THEME["card"])
+        style.configure("Topbar.TLabel", background=THEME["card"], foreground=THEME["muted"])
+        style.configure("TLabelframe", background=THEME["card"], foreground=THEME["text"])
+        style.configure("TLabelframe.Label", background=THEME["card"], foreground=THEME["text"],
+                        font=ui_font_label(9, "bold"))
 
-        style.configure("TButton", padding=(14, 10))
+        style.configure("CardBody.TFrame", background=THEME["card"])
+        style.configure("Card.TLabel", background=THEME["card"], foreground=THEME["text"])
+        style.configure("CardMuted.TLabel", background=THEME["card"], foreground=THEME["muted"])
+        style.configure("CardTitle.TLabel", background=THEME["card"], foreground=THEME["text"],
+                        font=ui_font_label(10, "bold"))
+        style.configure("TCheckbutton", background=THEME["card"], foreground=THEME["text"])
+
+        style.configure("TButton", padding=(14, 10), background=THEME["btn_bg"], foreground=THEME["text"])
+        style.map("TButton",
+                  background=[("active", THEME["btn_hover"]), ("!active", THEME["btn_bg"])],
+                  foreground=[("active", THEME["text"]), ("!active", THEME["text"])])
         style.configure("Preset.TButton", padding=(4, 2))
-        style.configure("PresetActive.TButton", padding=(4, 2), background="#2f6f52", foreground="#eafff3")
+        style.configure("PresetActive.TButton", padding=(4, 2), background=THEME["accent_dark"], foreground="#eef2ff")
         style.map("PresetActive.TButton",
-                  background=[("active", "#2f6f52"), ("!active", "#2f6f52")],
-                  foreground=[("active", "#eafff3"), ("!active", "#eafff3")])
-        style.configure("Start.TButton", padding=(14, 10), background="#16a34a", foreground="#f0fdf4")
+                  background=[("active", THEME["accent_dark"]), ("!active", THEME["accent_dark"])],
+                  foreground=[("active", "#eef2ff"), ("!active", "#eef2ff")])
+        style.configure("Start.TButton", padding=(14, 10), background=THEME["btn_primary"], foreground="#eff6ff")
         style.map("Start.TButton",
-                  background=[("active", "#15803d"), ("!active", "#16a34a")],
-                  foreground=[("active", "#f0fdf4"), ("!active", "#f0fdf4")])
-        style.configure("Hold.TButton", padding=(14, 10), background="#d97706", foreground="#fffbeb")
+                  background=[("active", THEME["btn_primary_hover"]), ("!active", THEME["btn_primary"])],
+                  foreground=[("active", "#eff6ff"), ("!active", "#eff6ff")])
+        style.configure("Hold.TButton", padding=(14, 10), background=THEME["btn_warn"], foreground="#fff7ed")
         style.map("Hold.TButton",
-                  background=[("active", "#b45309"), ("!active", "#d97706")],
-                  foreground=[("active", "#fffbeb"), ("!active", "#fffbeb")])
-        style.configure("Stop.TButton", padding=(14, 10), background="#b91c1c", foreground="#fef2f2")
+                  background=[("active", THEME["btn_warn_hover"]), ("!active", THEME["btn_warn"])],
+                  foreground=[("active", "#fff7ed"), ("!active", "#fff7ed")])
+        style.configure("Stop.TButton", padding=(14, 10), background=THEME["stop"], foreground="#fff1f2")
         style.map("Stop.TButton",
-                  background=[("active", "#991b1b"), ("!active", "#b91c1c")],
-                  foreground=[("active", "#fef2f2"), ("!active", "#fef2f2")])
-        style.configure("Danger.TButton", padding=(12, 10), background="#b91c1c", foreground="#fef2f2")
+                  background=[("active", THEME["stop_dark"]), ("!active", THEME["stop"])],
+                  foreground=[("active", "#fff1f2"), ("!active", "#fff1f2")])
+        style.configure("Danger.TButton", padding=(12, 10), background=THEME["stop"], foreground="#fff1f2")
         style.map("Danger.TButton",
-                  background=[("active", "#991b1b"), ("!active", "#b91c1c")],
-                  foreground=[("active", "#fef2f2"), ("!active", "#fef2f2")])
-        style.configure("BigState.TLabel", font=ui_font_label(18, "bold"), foreground="#ffd166")
+                  background=[("active", THEME["stop_dark"]), ("!active", THEME["stop"])],
+                  foreground=[("active", "#fff1f2"), ("!active", "#fff1f2")])
+        style.configure("JogX.TButton", padding=(8, 6), background=THEME["jog_x"], foreground=THEME["jog_fg"])
+        style.map("JogX.TButton",
+                  background=[("active", THEME["jog_x_hover"]), ("!active", THEME["jog_x"])],
+                  foreground=[("active", THEME["jog_fg"]), ("!active", THEME["jog_fg"])])
+        style.configure("JogY.TButton", padding=(8, 6), background=THEME["jog_y"], foreground=THEME["jog_fg"])
+        style.map("JogY.TButton",
+                  background=[("active", THEME["jog_y_hover"]), ("!active", THEME["jog_y"])],
+                  foreground=[("active", THEME["jog_fg"]), ("!active", THEME["jog_fg"])])
+        style.configure("JogZ.TButton", padding=(8, 6), background=THEME["jog_z"], foreground=THEME["jog_fg"])
+        style.map("JogZ.TButton",
+                  background=[("active", THEME["jog_z_hover"]), ("!active", THEME["jog_z"])],
+                  foreground=[("active", THEME["jog_fg"]), ("!active", THEME["jog_fg"])])
+        style.configure("BigState.TLabel", font=ui_font_label(18, "bold"), foreground=THEME["accent"])
+        style.configure("TProgressbar", troughcolor=THEME["bg"], background=THEME["accent"],
+                        lightcolor=THEME["accent"], darkcolor=THEME["accent"], bordercolor=THEME["card_edge"])
+
+    def _make_card(self, parent, title: str, padx: int = 12, pady: int = 10) -> tuple[tk.Frame, ttk.Frame]:
+        outer = tk.Frame(parent, bg=THEME["card_edge"])
+        inner = tk.Frame(outer, bg=THEME["card"])
+        inner.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_rowconfigure(0, weight=1)
+
+        title_lbl = tk.Label(inner, text=title, bg=THEME["card"], fg=THEME["text"],
+                             font=ui_font_label(10, "bold"))
+        title_lbl.grid(row=0, column=0, sticky="w", padx=padx, pady=(pady, 0))
+
+        body = ttk.Frame(inner, style="CardBody.TFrame")
+        body.grid(row=1, column=0, sticky="nsew", padx=padx, pady=(6, pady))
+        inner.grid_columnconfigure(0, weight=1)
+        inner.grid_rowconfigure(1, weight=1)
+
+        return outer, body
 
     @staticmethod
     def _ellipsis(s: str, max_len: int = 60) -> str:
@@ -1730,10 +1812,10 @@ class App(tk.Tk):
 
     def _set_status_banner(self, text: str, level: str):
         colors = {
-            "ok": ("#0f2f21", "#c7f9e3"),
-            "warn": ("#3b2a14", "#fde68a"),
-            "error": ("#3b0f0f", "#fecaca"),
-            "info": ("#1f2a37", "#e5e7eb")
+            "ok": ("#1f3c35", "#bff3e5"),
+            "warn": ("#1f3340", "#bfe7f6"),
+            "error": ("#3a1b25", "#f5c3d0"),
+            "info": (THEME["card"], THEME["text"])
         }
         bg, fg = colors.get(level, colors["info"])
         self.status_banner_var.set(text)
@@ -1906,11 +1988,11 @@ class App(tk.Tk):
         return getattr(self, "default_stream_mode", "sync")
 
     def _build_ui(self):
-        self.configure(background="#1b2128")
+        self.configure(background=THEME["bg"])
 
         scrollable = bool(self._cfg.get("scrollable_main", False))
         if scrollable:
-            wrapper = ScrollableRoot(self, bg="#1b2128")
+            wrapper = ScrollableRoot(self, bg=THEME["bg"])
             wrapper.grid(row=0, column=0, sticky="nsew")
             self.grid_rowconfigure(0, weight=1)
             self.grid_columnconfigure(0, weight=1)
@@ -1932,7 +2014,7 @@ class App(tk.Tk):
         root.grid_rowconfigure(1, weight=1)
 
         # ---------------- Topbar ----------------
-        topbar = ttk.Frame(root)
+        topbar = ttk.Frame(root, style="Topbar.TFrame")
         topbar.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
         topbar.grid_columnconfigure(99, weight=1)
 
@@ -1966,13 +2048,13 @@ class App(tk.Tk):
         self.btn_upload.grid(row=0, column=12, padx=(0, 16))
 
         self.device_info_var = tk.StringVar(value="Device: -")
-        ttk.Label(topbar, textvariable=self.device_info_var).grid(row=0, column=13, sticky="w", padx=(0, 12))
+        ttk.Label(topbar, textvariable=self.device_info_var, style="Topbar.TLabel").grid(row=0, column=13, sticky="w", padx=(0, 12))
 
         self.grbl_id_var = tk.StringVar(value="GRBL: -")
-        ttk.Label(topbar, textvariable=self.grbl_id_var).grid(row=0, column=14, sticky="w", padx=(0, 12))
+        ttk.Label(topbar, textvariable=self.grbl_id_var, style="Topbar.TLabel").grid(row=0, column=14, sticky="w", padx=(0, 12))
 
         self.job_label_var = tk.StringVar(value="No job loaded")
-        ttk.Label(topbar, textvariable=self.job_label_var).grid(row=0, column=99, sticky="e")
+        ttk.Label(topbar, textvariable=self.job_label_var, style="Topbar.TLabel").grid(row=0, column=99, sticky="e")
 
         sidebar = ttk.Frame(root)
         sidebar.grid(row=1, column=0, sticky="nsew", padx=(0, 10))
@@ -1993,61 +2075,86 @@ class App(tk.Tk):
         job_header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
         job_header.grid_columnconfigure(0, weight=1)
 
-        self.job_panel = ttk.LabelFrame(job_header, text="Job")
-        self.job_panel.grid(row=0, column=0, sticky="ew")
-        self.job_panel.grid_columnconfigure(0, weight=1)
-        self.job_panel.grid_columnconfigure(1, weight=0)
+        job_card, job_body = self._make_card(job_header, "Job")
+        job_card.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        job_body.grid_columnconfigure(0, weight=1)
+        job_body.grid_columnconfigure(1, weight=0)
 
         self.active_mode_var = tk.StringVar(value="Active: -")
-        ttk.Label(self.job_panel, textvariable=self.active_mode_var, anchor="center").grid(row=0, column=0, sticky="ew", padx=8, pady=(8, 6))
-        self.progress = ttk.Progressbar(self.job_panel, mode="determinate")
-        self.progress.grid(row=1, column=0, sticky="ew", padx=8, pady=(0, 8))
-        ttk.Label(self.job_panel, textvariable=self.job_line_var, width=12, anchor="e")\
-            .grid(row=1, column=1, sticky="e", padx=(0, 8), pady=(0, 8))
+        ttk.Label(job_body, textvariable=self.active_mode_var, anchor="center", style="Card.TLabel")\
+            .grid(row=0, column=0, sticky="ew", padx=0, pady=(0, 6))
+        self.progress = ttk.Progressbar(job_body, mode="determinate")
+        self.progress.grid(row=1, column=0, sticky="ew", padx=0, pady=(0, 0))
+        ttk.Label(job_body, textvariable=self.job_line_var, width=14, anchor="e", style="CardMuted.TLabel")\
+            .grid(row=1, column=1, sticky="e", padx=(8, 0), pady=(0, 0))
+
+        overrides_card, overrides_body = self._make_card(job_header, "Overrides")
+        overrides_card.grid(row=1, column=0, sticky="ew")
+        overrides_body.grid_columnconfigure(1, weight=1)
+
+        ttk.Label(overrides_body, text="Feed", style="Card.TLabel").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.feed_override_scale = ttk.Scale(overrides_body, from_=10, to=200, orient="horizontal",
+                                             command=self._feed_override_slider_changed)
+        self.feed_override_scale.grid(row=0, column=1, sticky="ew", padx=8, pady=(0, 4))
+        self.feed_override_scale.bind("<ButtonRelease-1>", lambda e: self._commit_feed_override())
+        ttk.Label(overrides_body, textvariable=self.feed_override_label_var, width=5, style="CardMuted.TLabel")\
+            .grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(0, 4))
+        self.btn_feed_reset = ttk.Button(overrides_body, text="Reset", command=self._reset_feed_override)
+        self.btn_feed_reset.grid(row=0, column=3, padx=(0, 0), pady=(0, 4))
+
+        ttk.Label(overrides_body, text="Spindle", style="Card.TLabel").grid(row=1, column=0, sticky="w", pady=(0, 0))
+        self.spindle_override_scale = ttk.Scale(overrides_body, from_=50, to=200, orient="horizontal",
+                                                command=self._spindle_override_slider_changed)
+        self.spindle_override_scale.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 0))
+        self.spindle_override_scale.bind("<ButtonRelease-1>", lambda e: self._commit_spindle_override())
+        ttk.Label(overrides_body, textvariable=self.spindle_override_label_var, width=5, style="CardMuted.TLabel")\
+            .grid(row=1, column=2, sticky="e", padx=(0, 6), pady=(0, 0))
+        self.btn_spindle_reset = ttk.Button(overrides_body, text="Reset", command=self._reset_spindle_override)
+        self.btn_spindle_reset.grid(row=1, column=3, padx=(0, 0), pady=(0, 0))
 
         # --- Main area: vertical split (G-code / Console) ---
         self.left_pane = ttk.PanedWindow(main, orient="vertical")
         self.left_pane.grid(row=1, column=0, sticky="nsew")
 
-        gcode_frame = ttk.LabelFrame(self.left_pane, text="G-code")
-        gcode_frame.grid_rowconfigure(0, weight=1)
-        gcode_frame.grid_columnconfigure(0, weight=1)
+        gcode_card, gcode_body = self._make_card(self.left_pane, "G-code")
+        gcode_body.grid_rowconfigure(0, weight=1)
+        gcode_body.grid_columnconfigure(0, weight=1)
         self.gcode_view = GCodeView(
-            gcode_frame,
+            gcode_body,
             default_height_lines=self.gcode_height_lines,
             sent_color=self.sent_line_color,
             ack_color=self.acked_line_color,
             show_sent=self.show_sent_highlight
         )
-        self.gcode_view.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        self.gcode_view.grid(row=0, column=0, sticky="nsew")
 
-        console_frame = ttk.LabelFrame(self.left_pane, text="Console")
-        console_frame.grid_columnconfigure(0, weight=1)
-        console_frame.grid_columnconfigure(1, weight=0)
-        console_frame.grid_rowconfigure(0, weight=1)
+        console_card, console_body = self._make_card(self.left_pane, "Console")
+        console_body.grid_columnconfigure(0, weight=1)
+        console_body.grid_columnconfigure(1, weight=0)
+        console_body.grid_rowconfigure(0, weight=1)
 
         self.console = tk.Text(
-            console_frame,
+            console_body,
             height=max(4, int(self.console_height_lines)),
             font=ui_font_mono(10),
-            background="#202733",
-            foreground="#cfd8e3",
-            insertbackground="#cfd8e3",
+            background=THEME["field"],
+            foreground=THEME["text"],
+            insertbackground=THEME["text"],
             relief="flat",
             borderwidth=0
         )
         self.console.config(state="disabled")
         self.console.bind("<Key>", lambda e: "break")
-        self.console_vsb = ttk.Scrollbar(console_frame, orient="vertical", command=self.console.yview)
+        self.console_vsb = ttk.Scrollbar(console_body, orient="vertical", command=self.console.yview)
         self.console.configure(yscrollcommand=self.console_vsb.set)
-        self.console.grid(row=0, column=0, sticky="nsew", padx=(6, 0), pady=(6, 4))
-        self.console_vsb.grid(row=0, column=1, sticky="ns", padx=(0, 6), pady=(6, 4))
+        self.console.grid(row=0, column=0, sticky="nsew")
+        self.console_vsb.grid(row=0, column=1, sticky="ns", padx=(8, 0))
 
-        cmd_row = ttk.Frame(console_frame)
-        cmd_row.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6, pady=(0, 6))
+        cmd_row = ttk.Frame(console_body, style="CardBody.TFrame")
+        cmd_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         cmd_row.grid_columnconfigure(1, weight=1)
 
-        ttk.Label(cmd_row, text="Command").grid(row=0, column=0, sticky="w")
+        ttk.Label(cmd_row, text="Command", style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.cmd_var = tk.StringVar()
         self.cmd_entry = ttk.Entry(cmd_row, textvariable=self.cmd_var)
         self.cmd_entry.grid(row=0, column=1, sticky="ew", padx=8)
@@ -2057,20 +2164,22 @@ class App(tk.Tk):
         self.btn_clear_console = ttk.Button(cmd_row, text="Clear", command=self.clear_console)
         self.btn_clear_console.grid(row=0, column=3)
 
-        self.left_pane.add(gcode_frame, weight=1)
-        self.left_pane.add(console_frame, weight=1)
+        self.left_pane.add(gcode_card, weight=1)
+        self.left_pane.add(console_card, weight=1)
         self.after(80, self._apply_pane_split_from_settings)
 
         # ---------------- Sidebar: Status + DRO + Overrides + Jog ----------------
-        banner = ttk.Frame(sidebar)
-        banner.grid(row=0, column=0, sticky="ew", pady=(8, 0))
-        banner.grid_columnconfigure(0, weight=1)
-        self.status_banner = tk.Label(banner, textvariable=self.status_banner_var,
-                                      bg="#1f2a37", fg="#e5e7eb", padx=8, pady=6, anchor="w")
+        status_card, status_body = self._make_card(sidebar, "Status")
+        status_card.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        status_body.grid_columnconfigure(0, weight=1)
+        self.status_banner = tk.Label(status_body, textvariable=self.status_banner_var,
+                                      bg=THEME["card"], fg=THEME["text"], padx=10, pady=10, anchor="w")
         self.status_banner.grid(row=0, column=0, sticky="ew")
 
-        dro_row = ttk.Frame(sidebar)
-        dro_row.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        dro_card, dro_body = self._make_card(sidebar, "Position")
+        dro_card.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        dro_row = ttk.Frame(dro_body, style="CardBody.TFrame")
+        dro_row.grid(row=0, column=0, sticky="ew")
         dro_row.grid_columnconfigure(0, weight=1)
         dro_row.grid_columnconfigure(1, weight=1)
 
@@ -2081,7 +2190,7 @@ class App(tk.Tk):
 
         jog_btn_width = 28
 
-        wpos_row = ttk.Frame(dro_row)
+        wpos_row = ttk.Frame(dro_row, style="CardBody.TFrame")
         wpos_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         for c in range(6):
             wpos_row.grid_columnconfigure(c, weight=1, uniform="wpos")
@@ -2100,49 +2209,29 @@ class App(tk.Tk):
         self.btn_set_wpos_y.grid(row=0, column=4, sticky="ew", padx=6)
         self.btn_set_wpos_z.grid(row=0, column=5, sticky="ew", padx=(6, 0))
 
-        overrides = ttk.LabelFrame(sidebar, text="Overrides")
-        overrides.grid(row=2, column=0, sticky="ew", pady=(10, 0))
-        overrides.grid_columnconfigure(1, weight=1)
-
-        ttk.Label(overrides, text="Feed").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
-        self.feed_override_scale = ttk.Scale(overrides, from_=10, to=200, orient="horizontal",
-                                             command=self._feed_override_slider_changed)
-        self.feed_override_scale.grid(row=0, column=1, sticky="ew", padx=8, pady=(8, 4))
-        self.feed_override_scale.bind("<ButtonRelease-1>", lambda e: self._commit_feed_override())
-        ttk.Label(overrides, textvariable=self.feed_override_label_var, width=5).grid(row=0, column=2, sticky="e", padx=(0, 6), pady=(8, 4))
-        self.btn_feed_reset = ttk.Button(overrides, text="Reset", command=self._reset_feed_override)
-        self.btn_feed_reset.grid(row=0, column=3, padx=(0, 8), pady=(8, 4))
-
-        ttk.Label(overrides, text="Spindle").grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
-        self.spindle_override_scale = ttk.Scale(overrides, from_=50, to=200, orient="horizontal",
-                                                command=self._spindle_override_slider_changed)
-        self.spindle_override_scale.grid(row=1, column=1, sticky="ew", padx=8, pady=(0, 8))
-        self.spindle_override_scale.bind("<ButtonRelease-1>", lambda e: self._commit_spindle_override())
-        ttk.Label(overrides, textvariable=self.spindle_override_label_var, width=5).grid(row=1, column=2, sticky="e", padx=(0, 6), pady=(0, 8))
-        self.btn_spindle_reset = ttk.Button(overrides, text="Reset", command=self._reset_spindle_override)
-        self.btn_spindle_reset.grid(row=1, column=3, padx=(0, 8), pady=(0, 8))
-
         self.feed_override_scale.set(self.feed_override_current)
         self.spindle_override_scale.set(self.spindle_override_current)
 
         # Sidebar body: Indicators + Jog
         body = ttk.Frame(sidebar)
-        body.grid(row=3, column=0, sticky="nsew", pady=(10, 0))
+        body.grid(row=2, column=0, sticky="nsew")
         body.grid_columnconfigure(0, weight=1)
         body.grid_columnconfigure(1, weight=0)
 
-        self.indicators = IndicatorColumn(body)
-        self.indicators.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        indicators_card, indicators_body = self._make_card(body, "Indicators")
+        indicators_card.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        self.indicators = IndicatorColumn(indicators_body)
+        self.indicators.grid(row=0, column=0, sticky="nsew")
 
         # Jog window
-        jog = ttk.LabelFrame(body, text="Jog")
-        jog.grid(row=0, column=1, sticky="nw")
-        jog.grid_columnconfigure(0, weight=1)
+        jog_card, jog_body = self._make_card(body, "Jog")
+        jog_card.grid(row=0, column=1, sticky="nw")
+        jog_body.grid_columnconfigure(0, weight=1)
 
-        cfg = ttk.Frame(jog)
-        cfg.grid(row=0, column=0, sticky="w", padx=8, pady=(8, 6))
+        cfg = ttk.Frame(jog_body, style="CardBody.TFrame")
+        cfg.grid(row=0, column=0, sticky="w")
 
-        ttk.Label(cfg, text="Units").grid(row=0, column=0, sticky="w")
+        ttk.Label(cfg, text="Units", style="Card.TLabel").grid(row=0, column=0, sticky="w")
         self.units_var = tk.StringVar(value="inch")
         self.units_combo = ttk.Combobox(cfg, textvariable=self.units_var, state="readonly", width=8, values=["inch", "mm"])
         self.units_combo.grid(row=0, column=1, padx=(6, 14))
@@ -2153,42 +2242,42 @@ class App(tk.Tk):
         self.jog_step_xy = tk.DoubleVar(value=0.1)
         self.jog_step_z = tk.DoubleVar(value=0.1)
 
-        self.step_preset_row_xy = ttk.Frame(jog)
-        self.step_preset_row_xy.grid(row=1, column=0, sticky="w", padx=8, pady=(0, 8))
+        self.step_preset_row_xy = ttk.Frame(jog_body, style="CardBody.TFrame")
+        self.step_preset_row_xy.grid(row=1, column=0, sticky="w", pady=(6, 8))
         self._build_step_preset_buttons()
 
-        pad = ttk.Frame(jog)
-        pad.grid(row=2, column=0, padx=8, pady=(0, 8))
+        pad = ttk.Frame(jog_body, style="CardBody.TFrame")
+        pad.grid(row=2, column=0, pady=(0, 8))
 
-        self.btn_jog_yp = ttk.Button(pad, text="Y+", width=8)
-        self.btn_jog_xm = ttk.Button(pad, text="X-", width=8)
-        self.btn_jog_xp = ttk.Button(pad, text="X+", width=8)
-        self.btn_jog_ym = ttk.Button(pad, text="Y-", width=8)
+        self.btn_jog_yp = ttk.Button(pad, text="Y+", width=8, style="JogY.TButton")
+        self.btn_jog_xm = ttk.Button(pad, text="X-", width=8, style="JogX.TButton")
+        self.btn_jog_xp = ttk.Button(pad, text="X+", width=8, style="JogX.TButton")
+        self.btn_jog_ym = ttk.Button(pad, text="Y-", width=8, style="JogY.TButton")
 
         self.btn_jog_yp.grid(row=0, column=1, padx=6, pady=6)
         self.btn_jog_xm.grid(row=1, column=0, padx=6, pady=6)
-        ttk.Label(pad, text="XYZ").grid(row=1, column=1, padx=6, pady=6)
+        ttk.Label(pad, text="XYZ", style="Card.TLabel").grid(row=1, column=1, padx=6, pady=6)
         self.btn_jog_xp.grid(row=1, column=2, padx=6, pady=6)
         self.btn_jog_ym.grid(row=2, column=1, padx=6, pady=6)
         self.btn_jog_cancel = ttk.Button(pad, text="Jog Cancel", style="Hold.TButton", command=self.jog_cancel)
         self.btn_jog_cancel.grid(row=0, column=3, rowspan=3, sticky="ns", padx=(12, 0), pady=6)
 
-        self.step_preset_row_z = ttk.Frame(jog)
-        self.step_preset_row_z.grid(row=3, column=0, padx=8, pady=(0, 6))
+        self.step_preset_row_z = ttk.Frame(jog_body, style="CardBody.TFrame")
+        self.step_preset_row_z.grid(row=3, column=0, pady=(0, 6))
         self._build_step_preset_buttons()
 
-        zrow = ttk.Frame(jog)
-        zrow.grid(row=4, column=0, padx=8, pady=(0, 8))
+        zrow = ttk.Frame(jog_body, style="CardBody.TFrame")
+        zrow.grid(row=4, column=0, pady=(0, 8))
         zrow.grid_columnconfigure(0, weight=0)
         zrow.grid_columnconfigure(1, weight=0)
 
-        self.btn_jog_zm = ttk.Button(zrow, text="Z-")
-        self.btn_jog_zp = ttk.Button(zrow, text="Z+")
+        self.btn_jog_zm = ttk.Button(zrow, text="Z-", style="JogZ.TButton")
+        self.btn_jog_zp = ttk.Button(zrow, text="Z+", style="JogZ.TButton")
         self.btn_jog_zm.grid(row=0, column=0, padx=(0, 6))
         self.btn_jog_zp.grid(row=0, column=1, padx=(6, 0))
 
-        mgrid = ttk.Frame(jog)
-        mgrid.grid(row=6, column=0, padx=8, pady=(0, 10))
+        mgrid = ttk.Frame(jog_body, style="CardBody.TFrame")
+        mgrid.grid(row=6, column=0, pady=(0, 10))
         for c in range(2):
             mgrid.grid_columnconfigure(c, weight=0, uniform="jogcols")
 
