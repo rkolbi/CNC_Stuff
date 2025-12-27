@@ -24,21 +24,23 @@ THEME = {
     "accent_dark": "#2563EB",
     "btn_bg": "#2a2a2a",
     "btn_hover": "#343434",
-    "btn_primary": "#16a249",
-    "btn_primary_hover": "#139040",
+    "btn_primary": "#0f7b36",
+    "btn_primary_hover": "#0c5f2b",
     "btn_warn": "#e3940f",
     "btn_warn_hover": "#cb820d",
-    "danger": "#e9590c",
-    "danger_dark": "#cc4f0a",
-    "stop": "#c94d0a",
-    "stop_dark": "#b44509",
+    "danger": "#b91c1c",
+    "danger_dark": "#7f1d1d",
+    "stop": "#b91c1c",
+    "stop_dark": "#7f1d1d",
     "ok": "#16a249",
-    "jog_x": "#e9590c",
-    "jog_x_hover": "#cc4f0a",
-    "jog_y": "#16a249",
-    "jog_y_hover": "#139040",
-    "jog_z": "#3B82F6",
-    "jog_z_hover": "#2563EB",
+    "jog_x": "#4b5563",
+    "jog_x_hover": "#64748b",
+    "jog_y": "#4b5563",
+    "jog_y_hover": "#64748b",
+    "jog_z": "#4b5563",
+    "jog_z_hover": "#64748b",
+    "jog_cancel": "#334155",
+    "jog_cancel_hover": "#475569",
     "jog_fg": "#f7f6ff"
 }
 
@@ -1563,6 +1565,10 @@ class App(tk.Tk):
         style.map("Hold.TButton",
                   background=[("active", THEME["btn_warn_hover"]), ("!active", THEME["btn_warn"])],
                   foreground=[("active", "#fff7ed"), ("!active", "#fff7ed")])
+        style.configure("JogCancel.TButton", padding=(14, 10), background=THEME["jog_cancel"], foreground=THEME["text"])
+        style.map("JogCancel.TButton",
+                  background=[("active", THEME["jog_cancel_hover"]), ("!active", THEME["jog_cancel"])],
+                  foreground=[("active", THEME["text"]), ("!active", THEME["text"])])
         style.configure("Stop.TButton", padding=(14, 10), background=THEME["stop"], foreground="#fff1f2")
         style.map("Stop.TButton",
                   background=[("active", THEME["stop_dark"]), ("!active", THEME["stop"])],
@@ -2259,7 +2265,7 @@ class App(tk.Tk):
         ttk.Label(pad, text="XYZ", style="Card.TLabel").grid(row=1, column=1, padx=6, pady=6)
         self.btn_jog_xp.grid(row=1, column=2, padx=6, pady=6)
         self.btn_jog_ym.grid(row=2, column=1, padx=6, pady=6)
-        self.btn_jog_cancel = ttk.Button(pad, text="Jog Cancel", style="Hold.TButton", command=self.jog_cancel)
+        self.btn_jog_cancel = ttk.Button(pad, text="Jog Cancel", style="JogCancel.TButton", command=self.jog_cancel)
         self.btn_jog_cancel.grid(row=0, column=3, rowspan=3, sticky="ns", padx=(12, 0), pady=6)
 
         self.step_preset_row_z = ttk.Frame(jog_body, style="CardBody.TFrame")
